@@ -1,0 +1,228 @@
+// Day01 backend data model — source of truth is ../dayone-backend.md §5.
+// Copied in verbatim; don't redesign ad hoc, see that doc for the reasoning.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CUSTOMER
+  MANAGER
+  ADMIN
+}
+
+model User {
+  id                    String    @id @default(cuid())
+  email                 String    @unique
+  password              String // bcrypt hash
+  phone                 String?
+  name                  String?
+  role                  Role      @default(CUSTOMER)
+  passwordResetToken    String?   @unique
+  passwordResetExpires  DateTime?
+  createdAt             DateTime  @default(now())
+  orders                Order[]
+  nfcTags               NfcTag[]
+  addresses             Address[]
+  reviews               Review[]
+}
+
+// Saved shipping addresses — a user can have several, one marked default.
+// Not on the original spec's model list; added for Account Home's
+// "Shipping & Addresses" tab. `Order.shippingAddress` stays a JSON snapshot
+// taken at checkout time (so editing/deleting a saved address here never
+// rewrites a past order's address) — this table is only the reusable book.
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  label     String? // e.g. "Home", "Work" — optional, user-chosen
+  fullName  String
+  phone     String
+  line1     String
+  line2     String?
+  city      String
+  state     String // feeds future GST CGST+SGST vs IGST logic in the Orders module
+  pincode   String
+  country   String   @default("India")
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id           String      @id @default(cuid())
+  name         String
+  slug         String      @unique
+  description  String
+  priceInPaise Int // store money as integer paise, never float — base/fallback price
+  gsm          Int? // e.g. 240
+  fit          String? // e.g. "Oversized Drop Shoulder"
+  images       String[] // max 5, enforced in the DTO — shared/default gallery
+  active       Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  orderItems   OrderItem[]
+  variants     ProductVariant[]
+  reviews      Review[]
+}
+
+// Purchase-gated reviews, added 2026-09-08. Eligibility is checked at
+// creation time against real order history — has a non-cancelled Order
+// containing this product, NOT "delivered" (nothing in this system ever
+// marks an order DELIVERED yet, no fulfillment-tracking UI exists — gating
+// on delivery would make reviews impossible for anyone, ever). `orderId`
+// records which qualifying order proved eligibility, for audit purposes;
+// it isn't re-checked on every read.
+model Review {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id])
+  rating    Int // 1-5
+  comment   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, productId]) // one review per user per product; edit, don't duplicate
+}
+
+// Color+size variants, added 2026-09-08. A product with zero variants is
+// "legacy" — the storefront falls back to static placeholder sizing until
+// real variants (with real stock) are added for it. Never auto-backfilled
+// with invented stock numbers for existing products; that's the founder's
+// own inventory data to enter, not something to fabricate.
+model ProductVariant {
+  id            String      @id @default(cuid())
+  productId     String
+  product       Product     @relation(fields: [productId], references: [id])
+  color         String? // optional — not every product needs a color axis
+  size          String
+  sku           String      @unique
+  priceInPaise  Int? // optional override; falls back to Product.priceInPaise if null
+  stockQuantity Int         @default(0)
+  images        String[] // max 5, enforced in the DTO — empty = falls back to Product.images
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  orderItems    OrderItem[]
+
+  // Coarse DB-level guard. NULL colors don't collide under Postgres unique
+  // semantics (NULL != NULL), so the service layer also checks for
+  // productId+size+color duplicates explicitly — don't rely on this alone.
+  @@unique([productId, color, size])
+}
+
+model Order {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id])
+  status           OrderStatus   @default(PENDING)
+  items            OrderItem[]
+  shippingAddress  Json
+  totalInPaise     Int
+  gstAmountInPaise Int
+  paymentGatewayId String?
+  paymentStatus    PaymentStatus @default(PENDING)
+  invoice          Invoice?
+  createdAt        DateTime      @default(now())
+  reviews          Review[]
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+// One row = one physical shirt = at most one NfcTag. No `quantity` field:
+// every unit is individually NFC-serialized, so "buy 2" means 2 OrderItem
+// rows, not one row with quantity 2 — there'd be nowhere to hang the second tag.
+model OrderItem {
+  id           String          @id @default(cuid())
+  orderId      String
+  order        Order           @relation(fields: [orderId], references: [id])
+  productId    String
+  product      Product         @relation(fields: [productId], references: [id])
+  priceInPaise Int // snapshot price at time of order
+  size         String // snapshotted from the variant at order time (or legacy free text)
+  color        String? // snapshotted from the variant at order time
+  // Nullable on purpose: orders placed before variants existed (real founder
+  // order from 2026-09-07, size-only) have no variant to point at — never
+  // backfilled with an invented one. Every new order requires variantId.
+  variantId    String?
+  variant      ProductVariant? @relation(fields: [variantId], references: [id])
+  nfcTag       NfcTag?
+}
+
+model Invoice {
+  id            String   @id @default(cuid())
+  orderId       String   @unique
+  order         Order    @relation(fields: [orderId], references: [id])
+  invoiceNumber String   @unique // sequential per financial year, e.g. DAY01/2026/0001
+  cgstInPaise   Int
+  sgstInPaise   Int
+  igstInPaise   Int
+  hsnCode       String
+  pdfUrl        String?
+  createdAt     DateTime @default(now())
+}
+
+model NfcTag {
+  id              String          @id @default(cuid())
+  code            String          @unique // short code written on the physical tag
+  status          TagStatus       @default(UNCLAIMED)
+  orderItemId     String?         @unique // the one physical shirt this tag is fused to
+  orderItem       OrderItem?      @relation(fields: [orderItemId], references: [id])
+  ownerId         String?
+  owner           User?           @relation(fields: [ownerId], references: [id])
+  destination     Destination?
+  timelineEntries TimelineEntry[] // V2 only — leave unused in V1
+  createdAt       DateTime        @default(now())
+}
+
+enum TagStatus {
+  UNCLAIMED // manufactured, not linked to a sale
+  ASSIGNED // linked to an order item (one physical shirt), not yet claimed
+  CLAIMED // buyer verified ownership, can edit destination
+}
+
+model Destination {
+  id        String   @id @default(cuid())
+  tagId     String   @unique
+  tag       NfcTag   @relation(fields: [tagId], references: [id])
+  url       String
+  updatedAt DateTime @updatedAt
+}
+
+// ============ V2 ONLY — do not build until instructed ============
+model TimelineEntry {
+  id        String      @id @default(cuid())
+  tagId     String
+  tag       NfcTag      @relation(fields: [tagId], references: [id])
+  photoUrl  String
+  caption   String?
+  entryDate DateTime
+  status    EntryStatus @default(PENDING)
+  createdAt DateTime    @default(now())
+}
+
+enum EntryStatus {
+  PENDING // never auto-publish
+  APPROVED
+  REJECTED
+}

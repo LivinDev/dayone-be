@@ -1,0 +1,270 @@
+# Day01 Backend — Status
+
+Workspace overview and business context: `../CLAUDE.md`. Frontend spec: `../dayone-web/dayone.md`. **Full backend spec (data model, stack, build order, key business logic) is `dayone-backend.md` in this directory — read it in full before writing any backend code.** This file only tracks build status; it doesn't restate the spec.
+
+## Current state: Prisma/Postgres foundation + Auth/roles + Products + Addresses + Orders + NFC tags done
+
+`AppController`/`AppService` are still the generated `nest new` defaults; `AuthModule`, `UsersModule`, `ProductsModule`, `AddressesModule`, `OrdersModule`, and now `NfcTagsModule` are real and working (see below). Payments (real gateway integration)/invoicing (PDF generation)/admin-staff-UI don't exist yet — Orders currently only supports **Cash on Delivery**, no Razorpay/Cashfree. Its own git repo (`dayone-be/.git`), **zero commits** (nothing has been committed despite the setup below — that's the user's call, not done automatically). Build order step 4 (Orders + Payments) is **partially done** — order creation with correct GST calculation and invoice numbering works end-to-end, real payment gateway integration doesn't exist yet per an explicit user decision (see below). **Build order step 6 (NFC tag system) is now fully done, backend and frontend both** — see "NFC tag system" below. Next planned step per the founder (2026-09-08 end of day): deploy this backend for real (target domains `day01.store` frontend / `api.day01.store` backend, nothing provisioned yet), test the deployed version, then continue — see `../CLAUDE.md`'s "Next session" note for the deploy checklist and one still-open call (whether `/t/:code`'s physical-tag URL lives on `api.day01.store` or gets proxied through the main domain).
+
+## NFC tag system (build order step 6 — backend done, verified end-to-end, 2026-09-08)
+
+The actual core V1 mechanic (tap the shirt → your link) — `src/nfc-tags/` (`NfcTagsController` + `TapRedirectController`, sharing one `NfcTagsService`). No schema change needed, `NfcTag`/`Destination`/`TagStatus` already existed in `prisma/schema.prisma`, unused until now.
+
+**The flow, precisely**: a tag's lifecycle has three separate steps, each owned by a different actor —
+1. **Generate** (`POST /nfc-tags/admin/bulk-generate`, Admin/Manager) — mints N `UNCLAIMED` tags with unique 8-char codes, ahead of manufacturing. This has to happen before the physical chips get written, not after.
+2. **Assign** (`PATCH /nfc-tags/admin/:id/assign`, Admin/Manager) — at fulfillment/packing time, links one specific tag to one specific sold `OrderItem` (`UNCLAIMED → ASSIGNED`). Deliberately *not* automatic at checkout — staff don't know which physical shirt off the shelf will get packed until they're packing it.
+3. **Claim** (`POST /nfc-tags/claim`, public) — the buyer proves ownership with Order ID + the email their order was placed under (`ASSIGNED → CLAIMED`, `ownerId` set to the order's actual buyer — never taken from the request body itself, the email match is what verifies identity).
+
+**Tag ↔ shirt is per physical unit, not per variant or per product** — `NfcTag.orderItemId` is a nullable `@unique` FK to `OrderItem`, so two customers buying the identical color+size variant still get two completely independent tags. This already fell naturally out of the existing "no quantity field, one `OrderItem` row per physical shirt" schema decision from the Product Variants phase — nothing new needed there.
+
+**`GET /t/:code`** — the tap-redirect, its own controller (`TapRedirectController`, `@Controller('t')`) at the app root, not nested under `/nfc-tags`, so the permanent physical-tag URL stays short (`day01.store/t/A7K2XQ`). No global route prefix exists in `main.ts`, so this sits cleanly at root with no collision. `ASSIGNED`/`UNCLAIMED` → 302 to `${FRONTEND_ORIGIN}/claim/:code`; `CLAIMED` → 302 straight to `Destination.url`.
+
+**Two real gaps flagged during planning and closed before building, not left as known issues:**
+- **Unknown/broken codes degrade gracefully, not a bare 404** — a customer standing there with a shirt shouldn't hit a dead-looking error page over a manufacturing typo or an orphaned code. `GET /t/:code` 302s to the frontend homepage (`FRONTEND_ORIGIN`) for any code it can't resolve — including the edge case of a `CLAIMED` tag with no `Destination` row somehow (shouldn't happen, the claim flow prompts for one immediately, but falls back safely rather than sending an already-owned tag back through the claim form where it'd just get rejected as "already claimed").
+- **`POST /nfc-tags/claim` is rate-limited** — `@nestjs/throttler` newly added, 5 requests/minute per IP, applied via `@UseGuards(ThrottlerGuard)` on *only* this one route (not registered as a global `APP_GUARD`, so nothing else in the app is throttled). This is the one public endpoint that grants ownership from just an Order ID + email — without a limit, someone who knows (or guesses) a tag's code could script Order-ID/email guesses against it. Verified live: the 6th claim attempt inside a minute from the same IP correctly 429s.
+
+**Other rules enforced in `NfcTagsService`**: codes are 8 chars over a 32-letter alphabet that excludes visually-ambiguous characters (`0/O`, `1/I/L` — these get physically printed/engraved next to the chip); assign only succeeds from `UNCLAIMED` and only onto an `OrderItem` that doesn't already have a tag; claim only succeeds from `ASSIGNED` (can't claim an unlinked tag, can't re-claim a claimed one); `PATCH /nfc-tags/:id/destination` (the owner editing their link afterward) 404s — not 403s — on a tag that isn't theirs, same "don't confirm existence" pattern as Addresses/Reviews; `GET /nfc-tags/by-code/:code` (used by the claim page) returns `{code, status, destinationUrl}` — `destinationUrl` only populated once `CLAIMED`, no other PII (never the linked order/owner). Returning the link here isn't a new leak: anyone tapping the physical tag already lands on that same URL via `GET /t/:code`. **Update 2026-09-08**: this endpoint's shape changed the same day to add `destinationUrl` — see `dayone-web/CLAUDE.md`'s "NFC claim landing page" note, which also simplified `GET /t/:code`'s own fallback (a claimed-but-no-destination tag now routes to `/claim/:code` like any other not-yet-fully-set-up tag, instead of a separate homepage fallback).
+
+**Third update, same day — real bug fix.** `getClaimInfo` originally only recognized "eligible to claim" (`status === ASSIGNED`); once a tag flipped to `CLAIMED`, a caller returning to the claim page without ever setting a destination got a false "not linked to any of your orders" message — hit for real on the founder's own tag. Fixed by adding `ownedByMe`/`needsDestination` to the response (see `dayone-web/CLAUDE.md`'s matching note) — a `CLAIMED` tag with no `Destination` and `ownerId === userId` now correctly routes back to the add-a-link step instead.
+
+**Fourth update, same day — Account Home's "NFC & Garments" tab built** (`dayone-web`'s `garments-tab.tsx`), consuming `GET /nfc-tags/my` and `PATCH /nfc-tags/:id/destination` — both already existed, no backend change needed. This closes out the NFC system's frontend entirely; see `dayone-web/CLAUDE.md`'s matching note.
+
+**Known operational gaps, surfaced 2026-09-08 but not built** — none of these block a first deploy, flagged for whenever real day-to-day tag operations start mattering:
+- No **unassign** — if staff link the wrong tag to an order item while packing, there's no way to reverse it (`PATCH .../assign` only works from `UNCLAIMED`, and there's no endpoint to go back).
+- No way to **retire/void** a damaged, lost, or mis-printed tag — it just sits `UNCLAIMED` forever with no "dead" state.
+- No **CSV export** of freshly generated codes — the admin UI shows them in a copy-paste textarea only, fine for a handful, not for a large batch.
+- No **audit trail** — current state is tracked, but not who assigned what or when.
+
+**Second update, same day — `claim` is no longer a public endpoint, and no longer takes an Order ID.** Once the frontend claim page started requiring login first (see `dayone-web/CLAUDE.md`), the founder pointed out the typed-Order-ID field was pointless — a logged-in caller's identity is already known, and a tag's `orderItemId` already points straight at the `Order` (and its `userId`) it's linked to. `POST /nfc-tags/claim` now requires `JwtAuthGuard` and takes just `{ code }`; `ClaimTagDto` no longer has `orderId`/`email` fields at all. `NfcTagsService.claim(userId, code)` checks `tag.orderItem.order.userId === userId` directly — 403s as "This tag isn't linked to any of your orders" otherwise, same wording either way (unclaimed vs. claimed vs. wrong account all get their own distinct message, but never one that confirms *whose* tag it actually is). New `GET /nfc-tags/claim-info/:code` (also authenticated) is a side-effect-free pre-check the claim page polls before showing anything: `{ status, eligible, product }`, where `product` only comes back when `eligible` is true — an ineligible caller (wrong account, or a tag that's UNCLAIMED/already CLAIMED) learns nothing about what garment it actually is.
+
+**Verified live with curl, full lifecycle on throwaway data**: tap an unknown code → 302 homepage; generate 3 tags as Admin; unauthenticated generate → 401; assign a tag to a real throwaway order's line → tap it → 302s to `/claim/:code`; double-assign the same tag → 400; assigning a second tag to an already-tagged order item → 400; claim with wrong email → 403; claim with wrong order id → 403; claim with correct Order ID + an email with stray case/whitespace (confirms `normalizeEmail` reuse) → succeeds; re-claim → 400; tap a claimed-but-no-destination tag → falls back to homepage (not a crash); owner sets a destination → tap now redirects straight there; owner updates it again → upserts correctly, tap reflects the new URL immediately; a second unrelated customer trying to edit the first customer's tag → 404; Manager can generate/assign/list same as Admin; Customer role blocked from `admin/all` → 403; 6 rapid claim attempts from one IP → 429 on the 6th. All test tags/orders/addresses/accounts cleaned up after (`prisma/cleanup-nfc-test.ts`, run once via `ts-node` then deleted — not committed).
+
+**How to apply:** This closes the backend half of build-order step 6. **The frontend claim landing page (`/claim/[code]`) is now also built** — see `dayone-web/CLAUDE.md`'s "NFC claim landing page" note — but only the placeholder/redirect screen, not the actual Order-ID+email claim form yet. Still unbuilt: that claim form itself, Account Home's "NFC & Garments" tab (currently a "Coming Soon" panel, backend is ready for it via `GET /nfc-tags/my` + the destination-update endpoint), and an admin UI for bulk-generate/assign (currently curl/API-only — staff have no dashboard screen for this yet, same gap Products/Orders had before their admin UIs got built). Also still open, and infra-not-code: in production, whatever reverse proxy sits in front of this API needs to route `/t/*` straight to this NestJS app rather than through the Next.js frontend, or the whole redirect mechanism never fires — flagged in the route's own code comment, needs confirming with whoever handles deployment.
+
+## Products module (build order step 3 — done, verified end-to-end)
+
+All under `src/products/`, no schema changes needed — `Product` was already in `prisma/schema.prisma`.
+
+- `GET /products` — public, active-only catalog (Home/Shop), newest first.
+- `GET /products/:slug` — public, single product for Product Detail; 404s if missing **or** deactivated (deactivated products aren't findable by slug at all, not just hidden from the list).
+- `GET /products/admin/all` — Admin/Manager only, everything including deactivated stock, for the dashboard product list. Declared *before* `GET /products/:slug` in the controller so Nest's route-matching order doesn't swallow `admin/all` as a slug param.
+- `POST /products` / `PATCH /products/:id` — Admin/Manager only (`@Roles(Role.ADMIN, Role.MANAGER)`, same guard pattern as Auth/Users), reused unmodified.
+- **No hard delete, by design**: `OrderItem` has a required FK to `Product`, and a shirt someone already bought must keep showing correctly in their order history forever. "Removing" a product from sale is `PATCH { active: false }`. Don't add a hard-delete endpoint later without first checking whether any `OrderItem` references the product.
+- DTOs (`create-product.dto.ts`/`update-product.dto.ts`) hand-written (not `@nestjs/mapped-types` `PartialType`), matching this project's existing DTO style. Slug is validated `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase kebab-case) and is a required, deliberate field on create — not auto-derived from `name`. Duplicate slug → 409 via catching Prisma `P2002`, same pattern as `AuthService.signup`'s duplicate-email handling.
+
+Verified live with curl against the running dev server: unauthenticated create → 401, admin create → 201, public list/detail, duplicate slug → 409, invalid slug format → 400, deactivate then confirm it disappears from public list/detail but still shows in `admin/all`, Manager can also create, a real Customer account gets 403 on both write and `admin/all`. All passed. Test products and the throwaway customer account were deleted from `day01_db` after.
+
+**How to apply:** Orders + Payments module is next (build order step 4). Any new admin/manager-only route should keep reusing `JwtAuthGuard`/`RolesGuard`/`@Roles()` from `src/common/` — don't reinvent per module. If a future module needs a "public + admin-sees-more" split like this one, the `/admin/all`-style separate route (not a conditional-auth query param) is the pattern used here.
+
+## Self-service profile endpoints added — 2026-09-07 (to unblock the frontend Account page)
+
+Not a named build-order step — added because `dayone-web`'s new Account Settings tab needed a way for a logged-in user to read/edit their own `name`/`phone`. Lives in the existing `UsersModule`/`UsersController`, no new module created:
+
+- `GET /users/me` — any authenticated role (`@UseGuards(JwtAuthGuard)` only, no `@Roles()`), returns `{id, email, name, phone, role, createdAt}` (password excluded via Prisma `select`).
+- `PATCH /users/me` — same guard, body is `UpdateProfileDto` (`name?`, `phone?` only). **Email and role are deliberately not editable here** — email would need re-verification that doesn't exist yet; role can only change through the admin-only `/users/staff` endpoint. The global `ValidationPipe`'s `whitelist`+`forbidNonWhitelisted` already 400s a `PATCH` body containing `email` or `role` — verified live.
+
+**How to apply:** Any future "edit my own X" endpoint should follow this pattern — plain `JwtAuthGuard` (no `RolesGuard`/`@Roles()`, since it's about identity not permission level) and a narrow DTO that excludes fields a user shouldn't self-edit.
+
+## Address book added — 2026-09-07 (to unblock Account Home's "Shipping & Addresses" tab)
+
+User asked for a saved-addresses table (multiple per user) after noticing the Account page had nowhere to show them — backend-only this round, frontend to follow. Not on the original spec's model list at all; added a new `Address` model + `src/addresses/` module (`AddressesController`/`AddressesService`), same self-service shape as `/users/me`.
+
+- **Schema**: `Address` (`label?`, `fullName`, `phone`, `line1`, `line2?`, `city`, `state`, `pincode`, `country` defaults `"India"`, `isDefault`) with a `userId` FK. Migration `20260907224500_add_address_model`, generated with `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script` + `prisma migrate deploy` — **Prisma 7's CLI changed the diff flags again** since the last time this workaround was used (`--from-url`/`--to-schema-datamodel` were removed; it's now `--from-config-datasource` and `--to-schema`). If `migrate dev` still can't run non-interactively in this environment next time, use this exact flag pair, not the old ones.
+- **`Order.shippingAddress` stays untouched** — still a JSON snapshot taken at checkout, deliberately not a foreign key to `Address`. Editing or deleting a saved address must never rewrite a past order's shipping address.
+- **Routes**, all under `@UseGuards(JwtAuthGuard)` only (no role restriction — any authenticated role has their own address book): `GET /addresses`, `POST /addresses`, `PATCH /addresses/:id`, `DELETE /addresses/:id` (204). Every read/write is scoped to `@CurrentUser().userId` — there's no way to pass another user's id in, and a request for someone else's address `id` 404s (not 403, so existence isn't leaked).
+- **Default-address logic**: a user's *first* saved address auto-becomes `isDefault: true` (no separate "set as default" step needed to have one at all). Setting `isDefault: true` on any create/update unsets it on all the user's other addresses first, inside a `$transaction` — verified live that flipping address B's default correctly un-defaults address A.
+- Pincode validated as a 6-digit Indian PIN (`/^\d{6}$/`); `state` is free text for now but the schema comment flags it as the future input to GST CGST+SGST vs IGST logic once Orders/Invoicing get built — don't let that field drift when that day comes.
+
+Verified live with curl: create (auto-default), create second (not default), patch-to-default (swaps correctly), invalid pincode 400, unauthenticated 401, a second real (throwaway) user can't list/patch/delete the first user's addresses (404, not 403 or a silent 200), then delete both and confirm empty. Test data cleaned from `day01_db` after.
+
+**How to apply:** Frontend Account Settings/"Shipping & Addresses" tab wiring is still pending — this is backend-only per the user's request. Follow the same `GET`/`PATCH /users/me` client pattern in `dayone-web/src/lib/api/` when that gets built (`src/lib/api/addresses.ts`, CRUD calls with `auth: true`). **Update same day**: the frontend tab was in fact built later the same day — see `dayone-web/CLAUDE.md`.
+
+## Admin Orders endpoints added — 2026-09-08
+
+Until now Admin/Manager had **zero backend visibility into orders** — `OrdersController`'s only routes were scoped to `@CurrentUser()` (a customer's own orders). Added three staff-only routes, same controller:
+
+- `GET /orders/admin/all` — every order across every customer, `include: { user: {id,name,email}, items: {product,variant}, invoice }`. No pagination — fine at this project's order volume, revisit if that stops being true. Declared before the existing bare `:id` route, same route-ordering rule as Products/Variants (though here it wouldn't actually collide either way, since `admin/all` and `admin/:id` are 2-segment paths and the bare `:id` route is 1-segment — kept the ordering convention anyway for readability).
+- `GET /orders/admin/:id` — one order, any customer's.
+- `PATCH /orders/admin/:id` — updates `status` and/or `paymentStatus` (`UpdateOrderStatusDto`, both optional, validated against the real `OrderStatus`/`PaymentStatus` enums). **Deliberately no state-machine enforcement** (e.g. nothing stops setting `DELIVERED` back to `PENDING`) — solo-founder low-volume store, staff are trusted; add transition rules later only if this actually causes a real mistake.
+
+All three guarded with the same `@UseGuards(RolesGuard) @Roles(Role.ADMIN, Role.MANAGER)` pattern used everywhere else, stacked on the controller-level `JwtAuthGuard`.
+
+Verified live with curl: unauthenticated 401, Admin and Manager both see all orders (including the founder's real one), a customer account gets 403, status/payment updates persist, an invalid enum value 400s, a nonexistent order id 404s. **Tested status updates directly on the founder's real order once, then explicitly reverted it back to its original `CONFIRMED`/`PENDING` state before moving on** — worth knowing if that order's `updatedAt`-adjacent history ever looks odd. All later UI-level verification used a fresh throwaway order instead, specifically to avoid touching real data a second time.
+
+**How to apply:** Frontend admin/manager Orders list + detail pages consume these — see `dayone-web/CLAUDE.md`'s "Admin Orders UI" note. When testing against real data in this project going forward, prefer a throwaway order/account over touching the founder's real order, even for read-then-revert checks — it worked out fine here but isn't the standing practice to repeat.
+
+## Ratings & Reviews (Phase 3 — closes the 3-part plan) — 2026-09-08
+
+Purchase-gated reviews, as planned back when Phase 1 (Admin Product UI) was scoped. New `Review` model + `src/reviews/` (`ReviewsController`/`ReviewsService`), one review per user per product (`@@unique([userId, productId])` — edit, don't duplicate). Fields are just `rating` (1-5) and `comment` — an optional `title` field shipped initially (common Amazon-style convention) but was removed the same day after the founder questioned its purpose; migration `20260908030000_remove_review_title` dropped the column (safe, table had 0 real rows). Don't re-add optional ceremony fields to forms in this project without being asked.
+
+**Eligibility, the one rule worth remembering**: gated on **"has a non-cancelled `Order` containing this product,"** not delivery status. Nothing in this system ever marks an `Order` `DELIVERED` (no fulfillment-tracking UI exists) — gating on delivery would make reviews permanently impossible for everyone. **Always re-checked server-side on `POST`, never trusted from the client** — a `GET /products/:productId/reviews/eligibility` endpoint exists purely so the frontend can decide whether to show the write-review form at all; it has zero authority of its own.
+
+- `GET /products/:productId/reviews` — public, no auth. Returns `{ reviews, averageRating, count }` (aggregate computed live via `prisma.review.aggregate`, not denormalized onto `Product` — fine at this volume, revisit if that ever becomes a hot path).
+- `GET /products/:productId/reviews/eligibility` — authenticated, returns `{ canReview, hasReviewed }`.
+- `POST /products/:productId/reviews` — authenticated. 409 if already reviewed (with a message pointing at editing instead), 403 if no qualifying order exists. The qualifying order's id is stored on the review (`orderId`) for audit purposes — not re-verified on every future read.
+- `PATCH /reviews/:id` / `DELETE /reviews/:id` — authenticated, ownership-checked (404 if not yours, not 403 — same "don't confirm existence" pattern as Addresses/Variants).
+
+Verified live with curl: eligibility false before purchase, 403 on review-without-purchase, eligibility true + successful create after a real order, 409 on duplicate, 403 reviewing a different never-purchased product, 400 on an out-of-range rating, public read works with no auth, and edit works. Then verified the **whole thing again through the real UI** end-to-end via Playwright (see `dayone-web/CLAUDE.md`) — anonymous/not-yet-purchased visitors never see the write-review form at all, a real purchase unlocks it, and the API-level rejection was independently re-confirmed via a direct request alongside the UI flow. All test data cleaned up each time.
+
+**How to apply:** This closes the 3-part plan (Admin Product UI → Variants → Reviews) the founder asked for on 2026-09-08. Any future feature needing "did this user buy X" logic should reuse the same `OrderItem`-join-`Order.status != CANCELLED` query pattern, not reinvent it.
+
+## Product Variants (Phase 2) — color+size, real stock, dual order path — 2026-09-08
+
+Follow-up to the Admin Product UI (Phase 1, below) and the earlier plan the user approved. User upgraded the scope mid-plan from "size-only" to real **color+size** variants — accepted and built as asked, not pushed back on, since it's a legitimate real-world catalog need.
+
+**Schema**: new `ProductVariant` (`color?`, `size`, `sku` unique, `priceInPaise?` override, `stockQuantity`, `images[]` max 5) under `Product`. `OrderItem` gained `variantId` (nullable FK) and `color` (nullable snapshot) alongside the existing `productId`/`size`. Migration `20260908010000_add_product_variants`, same `prisma migrate diff --from-config-datasource --to-schema ... --script` + `migrate deploy` workaround as before.
+
+**The one real production wrinkle handled carefully**: `day01_db` had exactly one real order already (the founder's own, via `john@dayone.com`, placed while testing Checkout earlier). Made `OrderItem.variantId` **nullable** specifically so that row didn't need a fabricated variant invented to satisfy a NOT NULL constraint — verified post-migration that its `variantId`/`color` came back `null` and everything else was untouched.
+
+**Dual order-creation path in `OrdersService.create`** — this is the part worth understanding before touching this code again: `CreateOrderDto` items accept *either* `{ variantId, quantity }` (real stock tracking) *or* the legacy `{ productId, size, quantity }` shape. The legacy path exists **only** so the 14 existing products (all variant-less at the time) didn't become unorderable the moment this shipped — real stock decrement only happens on the variant path (atomic `updateMany` guarded by `stockQuantity: { gte: needed }`, checked via affected-row count, so two concurrent checkouts can't both succeed past the last unit). The legacy path has **no stock check at all** (same as before variants existed) and is **rejected with a clear message the moment a product actually gets a real variant** — `product.variants.length > 0` on the legacy branch throws, forcing customers through the real system once the founder sets one up for that product. Don't remove this dual path casually — it's the reason nothing broke mid-rollout, not leftover cruft.
+
+**`VariantsModule`** (`src/variants/`): `POST /products/:productId/variants`, `PATCH /variants/:id`, `DELETE /variants/:id`, all `@Roles(ADMIN, MANAGER)`. Duplicate color+size is rejected at the **application layer**, not just the DB — Postgres treats `NULL != NULL`, so two color-less same-size variants wouldn't collide on the `@@unique([productId, color, size])` constraint alone. `DELETE` is blocked (400, not silently allowed) if any `OrderItem` already references the variant — "set stock to 0 instead" is the message; a variant that's genuinely never been ordered can be hard-deleted freely (no soft-delete needed there, unlike `Product`).
+
+**5-image cap** added to both `Product.images` and `ProductVariant.images` via `@ArrayMaxSize(5)` on the create/update DTOs (matches the user's explicit ask).
+
+`ProductsService.findBySlug`/`findOneForStaff` now `include: { variants }` (list endpoints don't, to keep those payloads light) — `GET /products/:slug` is what the storefront actually reads to decide real-vs-legacy rendering.
+
+Verified live with curl: variant CRUD, duplicate rejection (color+size and SKU), 6-image rejection, an order against real stock (correct decrement), an order that exceeds stock (clear 400), delete blocked once ordered vs allowed when never ordered, and the dual-path transition itself (legacy order succeeds on a variant-less product, then gets rejected with the exact right message the moment a variant is added for that same product). Then verified the **whole thing again end-to-end through the real UI** via Playwright (see `dayone-web/CLAUDE.md`). All test data cleaned up each time; confirmed the founder's real order and all 14 real/dummy products were untouched throughout.
+
+**How to apply:** Any future Orders-adjacent code must keep both branches in `OrdersService.create` in sync — don't "clean up" the legacy branch without first confirming every product actually has real variants (check `SELECT COUNT(*) FROM "Product" p WHERE NOT EXISTS (SELECT 1 FROM "ProductVariant" v WHERE v."productId" = p.id)` is zero). `SELLER_STATE`/GST logic from Phase "Orders module" is unchanged — variants only affect price/stock resolution, not tax.
+
+## S3 image upload added to Products module — 2026-09-08
+
+User asked for a full admin Products management UI ("add products, editing, variants") — planned as a phased effort (see `dayone-web/CLAUDE.md`'s "Admin Product Management UI" note for the full plan and phasing). Phase 1 is the admin CRUD screens on the *current* flat `Product` model; variants and reviews are separate, later phases, deliberately not done yet.
+
+Image handling was a real open decision — user chose **AWS S3** over pasting URLs or Cloudinary. Added:
+- `POST /products/uploads` (`@Roles(ADMIN, MANAGER)`, `FileInterceptor('file', { storage: memoryStorage() })`, 5MB limit, image-mimetype-only filter) — takes one multipart file, uploads it to S3, returns `{ url }`. The existing `create`/`update` endpoints are untouched — they still just take `images: string[]`; this endpoint is purely how the admin UI gets a real URL to put in that array.
+- `ProductsService.uploadImage` uses `@aws-sdk/client-s3`'s `S3Client`/`PutObjectCommand`, **lazily constructed** (not at module load) so the app still boots cleanly with no `AWS_*` env vars set — same "works without the real credential" pattern as Orders/COD. Without `AWS_REGION`/`AWS_S3_BUCKET` set, the endpoint 500s with a clear "Image storage isn't configured yet" message rather than a cryptic AWS SDK error — verified live.
+- **No ACLs used** — relies on a bucket policy for public `GetObject` (S3's modern default blocks object ACLs on new buckets; a policy is the more current approach). Exact setup steps (bucket, policy JSON, IAM user, inline policy JSON, required `.env` keys: `AWS_REGION`, `AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) were given to the user directly in chat, not written to a file — check the conversation history if this needs restating, or just ask the founder what bucket/region they used.
+- `GET /products/admin/:id` also added (same roles) — fetches one product including inactive, for the edit form's direct-link/refresh case. Declared before `GET /products/:slug` in the controller, same route-ordering rule as `admin/all`.
+
+Verified live with curl: unauthenticated upload 401, upload with no AWS creds configured 500s with the clear message (not a crash), `GET /products/admin/:id` returns the right product.
+
+**How to apply:** Any other admin-uploaded image (if one comes up outside Products) should reuse this same lazy-`S3Client` + bucket-policy pattern, not add a second image pipeline. Don't add real AWS credentials to any committed file — `.env` only, gitignored.
+
+## Orders module built — Cash on Delivery only, real GST calc (2026-09-07)
+
+User asked to build Checkout. Two real blockers surfaced and were resolved with the user before writing any code, not assumed:
+- **No payment gateway credentials exist** and can't be self-generated — user chose **Cash on Delivery only for now**. `Order.paymentGatewayId` stays null, `paymentStatus` stays `PENDING` (COD is collected on delivery, not tracked as paid here). Razorpay/Cashfree integration is still unbuilt — that's the actual remaining scope of build-order step 4, not this.
+- **Day01's own GST-registered state wasn't documented anywhere** — user confirmed **Karnataka** (Bangalore). Hardcoded as `SELLER_STATE` in `src/orders/orders.service.ts` (not an env var or schema field yet — revisit if the business entity's state ever needs to be configurable, e.g. multiple warehouses).
+
+`src/orders/` (`OrdersController`/`OrdersService`), all under `@UseGuards(JwtAuthGuard)`, scoped to `@CurrentUser()` (a 404, not 403, on someone else's order — same ownership pattern as Addresses):
+- `POST /orders` — body is `{ addressId, items: [{productId, size, quantity}] }`. **Price is always server-computed** from the live `Product.priceInPaise`, never trusted from the client. Each cart line's `quantity` is expanded into that many individual `OrderItem` rows inside the transaction (per the standing "no `quantity` column" rule — every shirt is its own NFC-serialized unit).
+- **GST is carved out of the tax-inclusive total, not added on top** — Cart/Product Detail already show prices as "Taxes Included" to the customer, so adding GST at order time would silently overcharge beyond what was shown. `gstAmountInPaise = round(total * 0.12 / 1.12)` (12% is the standard apparel-above-₹1000 GST slab; Day01's prices are all well above that). If the buyer's address state matches `SELLER_STATE` (case/whitespace-insensitive compare) → split into `cgstInPaise`/`sgstInPaise` (roughly half each, remainder to sgst to avoid rounding loss); otherwise → all `igstInPaise`. Verified live with a same-state (Karnataka) and cross-state (Delhi) address side by side — CGST+SGST vs pure IGST both came out correct.
+- **`Invoice` row is created in the same transaction**, with a real sequential number (`DAY01/{financial-year-start}/{0001}`, Indian FY = April–March) and `hsnCode: '6109'` (cotton T-shirts). **PDF generation is explicitly not built** — `pdfUrl` stays null; that's build-order step 5's remaining scope, not created here. Numbering is **count-based within the FY prefix inside the transaction** — fine at this project's order volume, but flagged as a spot that'd need a dedicated counter table (not a running count) if concurrent checkouts ever became common enough to race on it.
+- `Order.shippingAddress` is a full snapshot of the selected `Address` row's fields at order time (not just an id) — editing or deleting that saved address later never changes what a past order says it shipped to.
+- `Order.status` is set to `CONFIRMED` immediately on creation — there's no payment-gateway webhook to wait on for COD, unlike the eventual Razorpay/Cashfree flow.
+- `GET /orders` (own list) / `GET /orders/:id` (own detail, 404 if not owned) — both `include` items+product+invoice, used by `dayone-web`'s Account Home Overview tab and Order Confirmation page.
+
+Verified live with curl: same-state order (CGST+SGST, both ≈half of the GST amount, no rounding mismatch), cross-state order (pure IGST), invoice numbers sequential across both (`DAY01/2026/0001`, `.../0002`), a quantity-2 line correctly producing 2 separate `OrderItem` rows, unauthenticated 401, an inactive/nonexistent product id 400, someone else's address id 404 (not silently allowed), empty `items` array 400, and cross-user order-list isolation. All test orders/invoices/addresses/users cleaned from `day01_db` after (invoice → orderItem → order → address → user, in that FK order).
+
+**How to apply:** When real payment gateway integration eventually gets built, it plugs in as an *additional* payment path alongside COD, not a replacement — don't rip out the COD flow. `SELLER_STATE` is a hardcoded constant on purpose (one seller, one state, today) — don't over-engineer it into a settings table unless the business actually expands to multiple GST registrations.
+
+## Frontend integration — done (2026-09-07)
+
+`dayone-web`'s Login/Signup forms now call this API for real (see `dayone-web/CLAUDE.md` for the frontend-side detail). Two things changed here to support it:
+- **Dev port moved to 4000** (`.env` → `PORT=4000`) — `next dev` already owns 3000, this was a plain collision, not a design choice.
+- **CORS enabled**: `app.enableCors({ origin: process.env.FRONTEND_ORIGIN })` in `main.ts`, `FRONTEND_ORIGIN="http://localhost:3000"` in `.env`. Update this env var (or make it a list) before any real deployment — it's hardcoded to localhost right now.
+
+Verified live with Playwright driving an actual browser against both dev servers simultaneously — not just curl against the backend in isolation.
+
+## Real bug fixed — credential whitespace/case (2026-09-07)
+
+A user copy-pasted the seeded admin password from a chat message and picked up a trailing space; login failed with the correctly-worded but confusing "Invalid email or password". Root cause: **nothing anywhere normalized email casing or trimmed whitespace** — `bcrypt.compare` and Prisma's `findUnique({ where: { email } })` are both exact-match. Fixed properly, not just for this one case:
+
+- `src/common/utils/credentials.util.ts` — `normalizeEmail()` (trim + lowercase) and `normalizePassword()` (trim), applied in `AuthService.signup/login/forgotPassword/resetPassword` and `UsersService.createStaff` — everywhere a raw email/password from a DTO is used to hash, compare, or look up a user.
+- `src/common/decorators/trimmed-email.decorator.ts` — a `@TrimmedEmail()` decorator (combines `class-transformer`'s `@Transform` + `@IsEmail`) used on every DTO's `email` field instead of bare `@IsEmail()`, so a padded email trims *before* format validation runs — otherwise `" x@y.com "` fails validation with "email must be an email" before it ever reaches the service-layer normalization above.
+- **`main.ts`'s global `ValidationPipe` now has `transform: true`** — required for `@Transform()` decorators to actually affect the value the controller receives (without it, class-transformer only transforms a throwaway instance used internally for validation; the original untrimmed value still gets passed through).
+
+Verified: trailing/leading whitespace and any-case email now both log in correctly; a genuinely wrong password still correctly 401s (re-ran the full 17-case Playwright role matrix — no regressions). Any new DTO with an email field should use `@TrimmedEmail()`, not `@IsEmail()` directly.
+
+## Auth + role system (build order step 2 — done, verified end-to-end)
+
+Three roles on one `User` table (not a separate staff table — solo founder + at most one manager, matches §2's "avoid premature complexity"): `CUSTOMER` (default, self-signup), `MANAGER`, `ADMIN`. Decided with the user 2026-09-07: Manager gets full order access (same as Admin, including payment/GST detail — not read-only), Admin-only on analytics and on creating/managing staff accounts.
+
+| Area | Admin | Manager |
+|---|---|---|
+| Products (add/remove/update) | ✅ | ✅ |
+| NFC tags (bulk-generate, assign at fulfillment) | ✅ | ✅ |
+| Orders (full detail incl. payment/GST) | ✅ | ✅ |
+| Analytics/dashboards | ✅ | ❌ |
+| Creating/managing Admin/Manager accounts | ✅ | ❌ |
+
+**What's built**, all under `src/auth/` and `src/users/`, plus shared pieces in `src/common/`:
+- `POST /auth/signup` — bcrypt hash, **always forces `role: CUSTOMER` server-side**; the global `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })` in `main.ts` hard-rejects (400) any request body with an unexpected field at all — tested by sending `role: "ADMIN"` in a signup request and confirming it's rejected, not silently stripped.
+- `POST /auth/login` — bcrypt compare, returns `{ accessToken, user }`. JWT payload is `{ sub: userId, role }`.
+- `POST /auth/forgot-password` / `POST /auth/reset-password` — token is `crypto.randomBytes(32)`, only the **sha256 hash** is stored (`User.passwordResetToken`), 1-hour expiry (`passwordResetExpires`), single-use (cleared on successful reset). Always returns a generic success message regardless of whether the email exists, to avoid leaking registered emails. **No email provider wired up yet** — the raw reset token is `console.log`'d server-side as a placeholder (`// TODO` in `auth.service.ts`) so the flow is testable end-to-end; replace with real transactional email before launch.
+- `POST /users/staff` (Admin-only, `@Roles(Role.ADMIN)`) — the only way to create a `MANAGER`/`ADMIN` account after bootstrap. `CreateStaffDto.role` is restricted to `MANAGER`/`ADMIN` via `@IsIn` (can't use this endpoint to create a customer).
+- `src/common/guards/jwt-auth.guard.ts` + `roles.guard.ts` + `src/common/decorators/roles.decorator.ts` (`@Roles(...)`) + `current-user.decorator.ts` (`@CurrentUser()`) — the reusable pattern for gating any future route: `@UseGuards(JwtAuthGuard, RolesGuard) @Roles(Role.ADMIN, Role.MANAGER)`.
+- **Bootstrapping the first Admin**: `prisma/seed.ts`, run via `pnpm run seed`. Reads `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` from `.env`, no-ops if that email already exists. Already run once in dev — `admin@day01.store` exists in `day01_db` with the placeholder password from `.env` (**change it** before this ever matters for real). Not an API route on purpose — there's no safe way to expose "create an admin" over HTTP before any admin exists to gate it.
+
+**Gotcha hit and fixed — `JwtModule.register()` vs `registerAsync()`:** `JwtModule.register({ secret: process.env.JWT_SECRET })` reads the env var at **module-decoration time**, which happens on `import` — before `main.ts`'s `process.loadEnvFile('.env')` runs (import statements are hoisted ahead of any top-level code in the importing file). This silently produced `secret: undefined` and every login/signup 500'd with `Error: secretOrPrivateKey must have a value`, even though `JwtStrategy` (which reads the same env var inside its constructor, evaluated later at DI-instantiation time) worked fine. Fixed by switching to `JwtModule.registerAsync({ useFactory: () => ({...}) })` in `src/auth/auth.module.ts`, which defers reading `process.env` until DI resolution — after env is loaded. If any other module ever needs an env var inside a static `.register()`-style call, use the async form for the same reason.
+
+Verified live with curl: signup (incl. the rejected role-injection attempt), login, wrong-role 403, no-token 401, admin creating a manager, forgot/reset-password including single-use enforcement — all passed. Test accounts were deleted from `day01_db` after; the seeded `admin@day01.store` was kept.
+
+**What's actually set up:**
+- Local Postgres (Postgres.app, already running on port 5431 — same instance/pattern as sibling projects `dantsri_db`, `kyrix_store_dev`) with a `day01_db` database created.
+- `.env` → `DATABASE_URL="postgresql://postgres:@localhost:5431/day01_db?connection_limit=10"` (gitignored, not committed).
+- `prisma/schema.prisma` has the full data model from `dayone-backend.md` §5, copied in verbatim.
+- **Prisma 7.10.0** installed (pinned exact stable — `pnpm add prisma` initially resolved the `8.0.0-rc.13` release candidate, which was wrong for this project; corrected to stable). `@prisma/client` also 7.10.0 — keep these two in lockstep on any future upgrade.
+- **Prisma 7 breaking change vs. the spec doc's assumptions**: datasource `url` no longer lives in `schema.prisma` — it's now in `prisma.config.ts` (`datasource: { url: env("DATABASE_URL") }`, with `process.loadEnvFile(".env")` at the top since Prisma's config loader doesn't auto-read `.env` like the old CLI did). More importantly, **`PrismaClient` now requires an explicit driver adapter** — there's no more implicit "bundled query engine" mode. `@prisma/adapter-pg` + `pg` are installed; `src/prisma/prisma.service.ts` wraps this (`new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) })`) and is exported globally via `src/prisma/prisma.module.ts`, imported into `AppModule`. Any new PrismaClient instantiation elsewhere (scripts, seed files) needs the same adapter — a bare `new PrismaClient()` throws `PrismaClientInitializationError`.
+- Initial migration `prisma/migrations/20260906203031_init` applied and verified against `day01_db`. `pnpm exec nest start` boots clean, `PrismaModule` connects with no errors.
+- **`NfcTag` ↔ `OrderItem` fix (migration `20260906203657_nfc_tag_per_order_item`)**: the original spec had `NfcTag` linked 1:1 to `Order`, which only allows one tag per whole order. Since every physical shirt is individually NFC-serialized, an order with 2+ shirts needs 2+ tags — so `NfcTag.orderItemId` now points at `OrderItem`, not `Order`, and `OrderItem.quantity` was dropped (one row = one physical shirt = one tag slot; "buy 2" means 2 `OrderItem` rows, not `quantity: 2`). This applies at the cart/checkout level too — the cart module must not aggregate same product+size into one line with a quantity counter, it must create one line per physical unit. `dayone-backend.md` §5/§6 updated to match; `prisma migrate dev` couldn't run non-interactively in this environment, so the diff was generated with `prisma migrate diff` and applied via `prisma migrate deploy` instead — same result, just a different CLI path if this comes up again.
+- Node: this machine's default `node`/`pnpm` on PATH resolve to **Homebrew's node v23.7.0** (too new for Prisma 7, which needs 20.19+/22.12+/24.0+) ahead of Volta's pinned 22.23.1 — that's a pre-existing PATH ordering issue, not something fixed globally. This project is pinned via `"volta": { "node": "22.23.1" }` in `package.json`; when running CLI commands directly (not through an already-Volta-aware shell), use `/Users/livingstone/.volta/bin/pnpm`/`/Users/livingstone/.volta/bin/node` explicitly rather than the bare `pnpm`/`node` on PATH.
+- `pnpm-workspace.yaml` exists only to hold `allowBuilds` (postinstall-script approvals for `prisma`, `@prisma/engines`, `esbuild`, `@parcel/watcher`, `unrs-resolver`) — it's not a real multi-package workspace, `packages: ['.']` is just there because pnpm requires the field to exist once the file exists.
+
+## Stack (per `dayone-backend.md` §4)
+
+NestJS + **Prisma 7 + PostgreSQL (done, see above)**, Passport.js + JWT (`@nestjs/passport`, `@nestjs/jwt`) for auth, bcrypt for password hashing, Razorpay or Cashfree for payments, pdf-lib (or similar) for GST invoice PDFs, class-validator/class-transformer for request validation, AWS EC2 for hosting — none of the auth/payments/invoicing pieces are installed yet. AWS S3 is V2-only (timeline photos) — do not add it for V1.
+
+## Data model
+
+Full Prisma schema (User, Product, Order, OrderItem, Invoice, NfcTag, Destination, plus V2-only `TimelineEntry`/`EntryStatus` — left unused) is live in `prisma/schema.prisma`, migrated into `day01_db`. Source of truth for any future change is still `dayone-backend.md` §5 — don't redesign the schema ad hoc, edit the spec doc first if the model needs to change, then regenerate the migration.
+
+**Non-negotiable rules from the spec, easy to get wrong:**
+- Money is always integer paise (`priceInPaise`, `totalInPaise`, etc.) — never float.
+- GST split: same state → CGST+SGST; different state → IGST only. Legally required, must be correct per order.
+- Invoice numbers are sequential per financial year (`DAY01/2026/0001`), not random/UUID.
+- `/t/[code]` tap-redirect must be a direct fast NestJS route (DB lookup + 302), not proxied through Next.js SSR. `UNCLAIMED`/`ASSIGNED` → claim page; `CLAIMED` → `Destination.url`.
+- Claim flow verifies ownership via Order ID + email match, then flips tag to `CLAIMED`.
+- A tag is permanently bound to its original buyer — no resale/transfer logic, ever.
+- `TimelineEntry` (V2, not built now) must never auto-publish — starts `PENDING`, needs admin approval. India IT Act requirement, not a style choice.
+
+## Module layout (per `dayone-backend.md` §6)
+
+```
+src/
+  auth/ ✅     users/ ✅    products/ ✅   orders/ ✅ (COD only)
+  addresses/ ✅ (not in the original spec's list — see "Address book" above)
+  cart/ (client-side only, in dayone-web — see its CLAUDE.md)
+  payments/     invoices/ (numbering ✅, PDF ✗)     nfc-tags/ ✅     admin/
+  common/ ✅ (guards, decorators shared across modules — not in the original spec's list)
+```
+
+## Build order (per `dayone-backend.md` §8)
+
+1. ~~Foundation — Prisma init, connect Postgres, first migration with the full schema~~ **done**
+2. ~~Auth module — signup/login/forgot-password, bcrypt, JWT~~ **done, plus a role system (Admin/Manager/Customer) not in the original spec — see above**
+3. ~~Products module — CRUD, admin write / public read~~ **done — see "Products module" section above**
+4. **Orders + Payments — partially done.** Order creation (real GST calc, sequential invoice numbering, COD) works end-to-end — see "Orders module built" above. **Real payment gateway integration (Razorpay/Cashfree) is not built** — an explicit user decision, not an oversight, since no sandbox credentials exist. That's still the open part of this step.
+5. Invoicing — invoice **numbering + tax split** done as part of step 4 above; **PDF generation is not built** (`pdfUrl` stays null on every `Invoice` row)
+6. ~~NFC tag system — admin bulk-generate → link to the specific order item (one physical shirt) at fulfillment → claim flow → `/t/[code]` redirect~~ **backend done — see "NFC tag system" section above.** Frontend (claim page, Account Home tab, admin UI) still unbuilt.
+7. Account/Dashboard APIs — order history ✅ (`GET /orders`, consumed by `dayone-web`'s Account Home), claimed tags ✅ (`GET /nfc-tags/my`, backend ready, no frontend tab yet), edit-destination endpoint ✅ (`PATCH /nfc-tags/:id/destination`, same — backend ready, no frontend yet)
+
+**Do not start V2** (`TimelineEntry`, moderation queue, timeline pages) until explicitly instructed — gated behind V1 shipping and showing real signal. See `../CLAUDE.md` for the full cross-project do-not-build list (resale/transfer, social login, multi-currency, marketplace integrations, premature scale infra — no microservices/queues/heavy caching at this stage).
+
+## Commands
+
+```bash
+pnpm install
+pnpm run start:dev   # watch mode
+pnpm run lint
+pnpm run test         # jest unit tests
+pnpm run test:e2e
+```
+
+Package manager is **pnpm** (`pnpm-lock.yaml` present) — don't introduce npm/yarn lockfiles alongside it.
+
+## Frontend integration note
+
+Stale as of 2026-09-07 — **Login/Signup are wired to this API for real now**, not stubs (see the "Frontend integration" and "Admin/Manager dashboards" sections above, and `dayone-web/CLAUDE.md` for the frontend-side detail). Only the footer's newsletter capture still has a `// TODO` stub — there's no newsletter endpoint here to wire it to. Signup's fields are fullName/email/password/confirmPassword/updates-optin, matching `SignupDto` exactly.
