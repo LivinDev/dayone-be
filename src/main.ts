@@ -17,7 +17,16 @@ async function bootstrap() {
       transform: true,
     }),
   );
-  app.enableCors({ origin: process.env.FRONTEND_ORIGIN });
+  // FRONTEND_ORIGIN is the one canonical storefront URL (also used by the
+  // /t/:code and /claim/:code redirect targets — see tap-redirect.controller.ts).
+  // CORS_EXTRA_ORIGINS is optional and additive, for origins that should be
+  // allowed to call this API without being the redirect target themselves —
+  // e.g. a local frontend dev server pointed at the deployed backend.
+  const extraOrigins = (process.env.CORS_EXTRA_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  app.enableCors({ origin: [process.env.FRONTEND_ORIGIN, ...extraOrigins].filter(Boolean) });
   await app.listen(process.env.PORT ?? 3000);
 }
 void bootstrap();

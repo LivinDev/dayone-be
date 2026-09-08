@@ -2,11 +2,6 @@ import { Controller, Get, Param, Redirect } from '@nestjs/common';
 import { TagStatus } from '@prisma/client';
 import { NfcTagsService } from './nfc-tags.service';
 
-// The frontend origin a code degrades to when nothing better is known — the
-// homepage, not a bare error page. A tap that lands on a real (if generic)
-// page reads as "huh, weird" rather than "this brand's tech is broken."
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000';
-
 // This route is deliberately its own controller at the app root (`/t/:code`,
 // not nested under `/nfc-tags`) so a physical tag's permanent URL stays
 // short. It must be reachable directly — in production, whatever reverse
@@ -19,13 +14,21 @@ export class TapRedirectController {
   @Get(':code')
   @Redirect()
   async tap(@Param('code') code: string) {
+    // Read lazily, per-request — not as a module-level constant. TS compiles
+    // this file's imports into requires hoisted above main.ts's
+    // process.loadEnvFile('.env') call, so a module-level `process.env` read
+    // here would always see undefined and silently lock in the fallback for
+    // the process's whole lifetime, regardless of what .env actually says
+    // (the same class of bug already hit once with JwtModule.register()).
+    const frontendOrigin = process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000';
+
     const tag = await this.nfcTagsService.findForRedirect(code);
 
     // An unknown code (typo during writing, an orphaned/miswritten chip)
     // degrades to the homepage rather than a bare 404 — a customer standing
     // there with a shirt shouldn't hit a dead-looking error page.
     if (!tag) {
-      return { url: FRONTEND_ORIGIN, statusCode: 302 };
+      return { url: frontendOrigin, statusCode: 302 };
     }
 
     if (tag.status === TagStatus.CLAIMED && tag.destination) {
@@ -37,6 +40,6 @@ export class TapRedirectController {
     // it does its own by-code lookup and shows the right state (a claimed
     // tag with no link yet doesn't need to re-prove ownership through a
     // form, it just hasn't had a link added).
-    return { url: `${FRONTEND_ORIGIN}/claim/${tag.code}`, statusCode: 302 };
+    return { url: `${frontendOrigin}/claim/${tag.code}`, statusCode: 302 };
   }
 }
