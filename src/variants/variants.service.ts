@@ -22,6 +22,7 @@ export class VariantsService {
     }
 
     await this.assertNoDuplicate(productId, dto.color ?? null, dto.size);
+    this.assertValidMrp(dto.mrpInPaise, dto.priceInPaise ?? product.priceInPaise);
 
     try {
       return await this.prisma.productVariant.create({
@@ -42,6 +43,17 @@ export class VariantsService {
         dto.size ?? existing.size,
         id,
       );
+    }
+
+    if (dto.mrpInPaise !== undefined) {
+      let effectivePrice = dto.priceInPaise ?? existing.priceInPaise;
+      if (effectivePrice == null) {
+        const product = await this.prisma.product.findUniqueOrThrow({
+          where: { id: existing.productId },
+        });
+        effectivePrice = product.priceInPaise;
+      }
+      this.assertValidMrp(dto.mrpInPaise, effectivePrice);
     }
 
     try {
@@ -100,6 +112,12 @@ export class VariantsService {
       throw new ConflictException(
         `A variant with size "${size}"${color ? ` and color "${color}"` : ''} already exists for this product`,
       );
+    }
+  }
+
+  private assertValidMrp(mrpInPaise: number | undefined, priceInPaise: number) {
+    if (mrpInPaise != null && mrpInPaise < priceInPaise) {
+      throw new BadRequestException('MRP must be greater than or equal to the selling price');
     }
   }
 

@@ -54,15 +54,30 @@ model Address {
   updatedAt DateTime @updatedAt
 }
 
+// Admin-manageable — not a fixed enum. Created/renamed/deleted from the
+// dashboard (`src/categories/`); deleting one just detaches it from any
+// products via the implicit m2m join table's cascade, no block/guard needed
+// (unlike ProductVariant's ordered-count guard, which only applies to a
+// required single FK — category membership is optional/many-valued).
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
 model Product {
   id           String      @id @default(cuid())
   name         String
   slug         String      @unique
   description  String
-  priceInPaise Int // store money as integer paise, never float — base/fallback price
+  priceInPaise Int // store money as integer paise, never float — base/fallback selling price
+  mrpInPaise   Int? // optional "was" price — discount % is computed live from this, never stored
   gsm          Int? // e.g. 240
   fit          String? // e.g. "Oversized Drop Shoulder"
   images       String[] // max 5, enforced in the DTO — shared/default gallery
+  categories   Category[] // occasion/gender tags, a product can have multiple
   active       Boolean     @default(true)
   createdAt    DateTime    @default(now())
   orderItems   OrderItem[]
@@ -106,6 +121,7 @@ model ProductVariant {
   size          String
   sku           String      @unique
   priceInPaise  Int? // optional override; falls back to Product.priceInPaise if null
+  mrpInPaise    Int? // optional override; falls back to Product.mrpInPaise if null
   stockQuantity Int         @default(0)
   images        String[] // max 5, enforced in the DTO — empty = falls back to Product.images
   createdAt     DateTime    @default(now())

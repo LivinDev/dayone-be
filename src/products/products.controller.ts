@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -26,10 +27,12 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 export class ProductsController {
   constructor(private productsService: ProductsService) {}
 
-  // Public — Shop listing.
+  // Public — Home/Collection listing. Optional ?category=<slug> filter
+  // (a real Category's slug now, not a fixed enum value — an unknown slug
+  // just yields an empty list, same as any other non-matching filter).
   @Get()
-  findAll() {
-    return this.productsService.findAllActive();
+  findAll(@Query('category') category?: string) {
+    return this.productsService.findAllActive(category);
   }
 
   // Admin/Manager — dashboard listing, includes deactivated products.

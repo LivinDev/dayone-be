@@ -31,6 +31,14 @@ export class CreateProductDto {
   @Min(1)
   priceInPaise: number;
 
+  // Optional "was" price — validated against priceInPaise at the service
+  // layer (mrp must be >= the selling price), not here, since that's a
+  // cross-field check.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  mrpInPaise?: number;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -45,6 +53,14 @@ export class CreateProductDto {
   @ArrayMaxSize(5, { message: 'A product can have at most 5 images' })
   @IsString({ each: true })
   images?: string[];
+
+  // Category ids to connect — validated as real Categories at the service
+  // layer (a bad id 404s via the FK constraint / an explicit lookup), not
+  // an enum anymore now that categories are admin-manageable.
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  categories?: string[];
 
   @IsOptional()
   @IsBoolean()

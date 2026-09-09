@@ -26,6 +26,13 @@ export class CreateVariantDto {
   @Min(1)
   priceInPaise?: number;
 
+  // Optional "was" price override — falls back to Product.mrpInPaise if
+  // unset. Validated (mrp >= effective selling price) at the service layer.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  mrpInPaise?: number;
+
   @IsInt()
   @Min(0)
   stockQuantity: number;

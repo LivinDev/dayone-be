@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   InternalServerErrorException,
@@ -49,23 +50,33 @@ export class ProductsService {
     };
   }
 
-  // Public catalog (Home/Shop) — active only, newest first.
-  findAllActive() {
+  // Public catalog (Home/Collection) — active only, newest first. Optional
+  // single-slug category filter (?category=<slug> on the controller) —
+  // tabs are exclusive, never multiple at once, so this stays single-value
+  // rather than the old comma-list-of-enum-values design.
+  findAllActive(categorySlug?: string) {
     return this.prisma.product.findMany({
-      where: { active: true },
+      where: {
+        active: true,
+        ...(categorySlug ? { categories: { some: { slug: categorySlug } } } : {}),
+      },
       orderBy: { createdAt: 'desc' },
+      include: { categories: true },
     });
   }
 
   // Admin/Manager product list — everything, including deactivated stock.
   findAllForStaff() {
-    return this.prisma.product.findMany({ orderBy: { createdAt: 'desc' } });
+    return this.prisma.product.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { categories: true },
+    });
   }
 
   async findBySlug(slug: string) {
     const product = await this.prisma.product.findUnique({
       where: { slug },
-      include: { variants: { orderBy: { createdAt: 'asc' } } },
+      include: { variants: { orderBy: { createdAt: 'asc' } }, categories: true },
     });
     if (!product || !product.active) {
       throw new NotFoundException('Product not found');
@@ -76,7 +87,7 @@ export class ProductsService {
   async findOneForStaff(id: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
-      include: { variants: { orderBy: { createdAt: 'asc' } } },
+      include: { variants: { orderBy: { createdAt: 'asc' } }, categories: true },
     });
     if (!product) {
       throw new NotFoundException('Product not found');
@@ -85,32 +96,61 @@ export class ProductsService {
   }
 
   async create(dto: CreateProductDto) {
+    const { categories, ...rest } = dto;
+    this.assertValidMrp(rest.mrpInPaise, rest.priceInPaise);
     try {
-      return await this.prisma.product.create({ data: dto });
+      return await this.prisma.product.create({
+        data: {
+          ...rest,
+          ...(categories ? { categories: { connect: categories.map((id) => ({ id })) } } : {}),
+        },
+        include: { categories: true },
+      });
     } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        throw new ConflictException('A product with this slug already exists');
-      }
-      throw err;
+      throw this.mapProductWriteError(err);
     }
   }
 
   async update(id: string, dto: UpdateProductDto) {
-    await this.findOneForStaff(id);
-    try {
-      return await this.prisma.product.update({ where: { id }, data: dto });
-    } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        throw new ConflictException('A product with this slug already exists');
-      }
-      throw err;
+    const existing = await this.findOneForStaff(id);
+    const { categories, ...rest } = dto;
+    if (rest.mrpInPaise !== undefined) {
+      this.assertValidMrp(rest.mrpInPaise, rest.priceInPaise ?? existing.priceInPaise);
     }
+    try {
+      return await this.prisma.product.update({
+        where: { id },
+        // `set` (not `connect`) — the admin form always submits the full
+        // current selection, so this replaces the association rather than
+        // only adding to it.
+        data: {
+          ...rest,
+          ...(categories ? { categories: { set: categories.map((id) => ({ id })) } } : {}),
+        },
+        include: { categories: true },
+      });
+    } catch (err) {
+      throw this.mapProductWriteError(err);
+    }
+  }
+
+  // A "was" price below the actual selling price isn't a discount, it's
+  // just wrong data — reject it here rather than let the storefront show a
+  // negative/zero discount.
+  private assertValidMrp(mrpInPaise: number | undefined, priceInPaise: number) {
+    if (mrpInPaise != null && mrpInPaise < priceInPaise) {
+      throw new BadRequestException('MRP must be greater than or equal to the selling price');
+    }
+  }
+
+  private mapProductWriteError(err: unknown) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      return new ConflictException('A product with this slug already exists');
+    }
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+      return new BadRequestException('One or more selected categories no longer exist');
+    }
+    return err;
   }
 
   // No hard delete: OrderItem rows reference Product, and a shirt someone

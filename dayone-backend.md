@@ -103,15 +103,27 @@ model Address {
   updatedAt DateTime @updatedAt
 }
 
+// Admin-manageable — not a fixed enum. Founder creates/renames/deletes these
+// from the dashboard; a product can have multiple.
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
 model Product {
   id            String   @id @default(cuid())
   name          String
   slug          String   @unique
   description   String
-  priceInPaise  Int              // store money as integer paise, never float
+  priceInPaise  Int              // store money as integer paise, never float — selling price
+  mrpInPaise    Int?             // optional "was" price — discount % is computed live from this, never stored
   gsm           Int?             // e.g. 240
   fit           String?          // e.g. "Oversized Drop Shoulder"
   images        String[]
+  categories    Category[]  // occasion/gender tags, a product can have multiple
   active        Boolean  @default(true)
   createdAt     DateTime @default(now())
   orderItems    OrderItem[]

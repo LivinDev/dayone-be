@@ -10,6 +10,7 @@ import { OrdersModule } from './orders/orders.module';
 import { VariantsModule } from './variants/variants.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { NfcTagsModule } from './nfc-tags/nfc-tags.module';
+import { CategoriesModule } from './categories/categories.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { NfcTagsModule } from './nfc-tags/nfc-tags.module';
     VariantsModule,
     ReviewsModule,
     NfcTagsModule,
+    CategoriesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

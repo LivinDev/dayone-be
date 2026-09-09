@@ -30,6 +30,11 @@ export class UpdateVariantDto {
 
   @IsOptional()
   @IsInt()
+  @Min(1)
+  mrpInPaise?: number;
+
+  @IsOptional()
+  @IsInt()
   @Min(0)
   stockQuantity?: number;
 

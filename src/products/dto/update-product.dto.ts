@@ -39,6 +39,11 @@ export class UpdateProductDto {
   @IsOptional()
   @IsInt()
   @Min(1)
+  mrpInPaise?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
   gsm?: number;
 
   @IsOptional()
@@ -50,6 +55,11 @@ export class UpdateProductDto {
   @ArrayMaxSize(5, { message: 'A product can have at most 5 images' })
   @IsString({ each: true })
   images?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  categories?: string[];
 
   @IsOptional()
   @IsBoolean()
