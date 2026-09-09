@@ -30,9 +30,11 @@ export class ProductsController {
   // Public — Home/Collection listing. Optional ?category=<slug> filter
   // (a real Category's slug now, not a fixed enum value — an unknown slug
   // just yields an empty list, same as any other non-matching filter).
+  // Optional ?q=<text> searches name/description/fit/category name and
+  // combines with ?category= when both are present.
   @Get()
-  findAll(@Query('category') category?: string) {
-    return this.productsService.findAllActive(category);
+  findAll(@Query('category') category?: string, @Query('q') q?: string) {
+    return this.productsService.findAllActive(category, q);
   }
 
   // Admin/Manager — dashboard listing, includes deactivated products.

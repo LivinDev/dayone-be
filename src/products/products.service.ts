@@ -54,14 +54,51 @@ export class ProductsService {
   // single-slug category filter (?category=<slug> on the controller) —
   // tabs are exclusive, never multiple at once, so this stays single-value
   // rather than the old comma-list-of-enum-values design.
-  findAllActive(categorySlug?: string) {
-    return this.prisma.product.findMany({
+  async findAllActive(categorySlug?: string, q?: string) {
+    const term = q?.trim();
+    const where: Prisma.ProductWhereInput = {
+      active: true,
+      ...(categorySlug ? { categories: { some: { slug: categorySlug } } } : {}),
+    };
+
+    if (!term) {
+      return this.prisma.product.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        include: { categories: true },
+      });
+    }
+
+    // No search infra beyond Postgres itself — fine at this catalog size
+    // (single digits/low hundreds of products). Case-insensitive substring
+    // match across the fields a shopper would actually type: name,
+    // description, fit, and any tagged category name. Revisit with Postgres
+    // full-text search (tsvector + GIN index) only if the catalog grows
+    // enough that relevance ranking/typo-tolerance actually starts to
+    // matter — no reason to reach for external search infra before that.
+    const matches = { contains: term, mode: Prisma.QueryMode.insensitive };
+    const products = await this.prisma.product.findMany({
       where: {
-        active: true,
-        ...(categorySlug ? { categories: { some: { slug: categorySlug } } } : {}),
+        ...where,
+        OR: [
+          { name: matches },
+          { description: matches },
+          { fit: matches },
+          { categories: { some: { name: matches } } },
+        ],
       },
       orderBy: { createdAt: 'desc' },
       include: { categories: true },
+    });
+
+    // Rank name matches above description/fit/category-only matches so the
+    // most obviously relevant result shows first, without needing a real
+    // scoring engine.
+    const lowerTerm = term.toLowerCase();
+    return products.sort((a, b) => {
+      const aNameMatch = a.name.toLowerCase().includes(lowerTerm) ? 0 : 1;
+      const bNameMatch = b.name.toLowerCase().includes(lowerTerm) ? 0 : 1;
+      return aNameMatch - bNameMatch;
     });
   }
 
