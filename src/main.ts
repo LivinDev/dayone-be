@@ -26,7 +26,9 @@ async function bootstrap() {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-  app.enableCors({ origin: [process.env.FRONTEND_ORIGIN, ...extraOrigins].filter(Boolean) });
+  app.enableCors({
+    origin: [process.env.FRONTEND_ORIGIN, ...extraOrigins].filter(Boolean),
+  });
   await app.listen(process.env.PORT ?? 3000);
 }
 void bootstrap();

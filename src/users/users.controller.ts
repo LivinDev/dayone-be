@@ -29,6 +29,13 @@ export class UsersController {
     return this.usersService.updateMe(user.userId, dto);
   }
 
+  @Get('staff')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  listStaff() {
+    return this.usersService.listStaff();
+  }
+
   @Post('staff')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)

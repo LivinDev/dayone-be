@@ -5,10 +5,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { NfcTag, Prisma, TagStatus } from '@prisma/client';
+import {
+  DestinationKind,
+  NfcTag,
+  Prisma,
+  StoryTheme,
+  TagStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssignTagDto } from './dto/assign-tag.dto';
 import { UpdateDestinationDto } from './dto/update-destination.dto';
+import { UpdateDestinationKindDto } from './dto/update-destination-kind.dto';
 
 // Excludes 0/O and 1/I/L — these get physically printed/engraved next to
 // the chip, so visually-ambiguous characters would cause real mis-typed
@@ -114,15 +121,19 @@ export class NfcTagsService {
     });
   }
 
-  // Public — lightweight status lookup for the claim page. No PII beyond
-  // the destination URL — that's fine to return here since anyone tapping
-  // the physical tag already gets redirected straight to it via GET
-  // /t/:code, so this isn't disclosing anything new. Never returns the
-  // linked order/owner.
+  // Public — lightweight status lookup for the claim page (and, for a
+  // Story-kind tag, the public /story/:code page itself). No PII beyond
+  // the destination URL/garment — that's fine to return here since anyone
+  // tapping the physical tag already gets redirected straight to this same
+  // content via GET /t/:code, so this isn't disclosing anything new. Never
+  // returns the linked order/owner.
   async findByCode(code: string) {
     const tag = await this.prisma.nfcTag.findUnique({
       where: { code },
-      include: { destination: true },
+      include: {
+        destination: true,
+        orderItem: { include: { product: true } },
+      },
     });
     if (!tag) {
       throw new NotFoundException('Tag not found');
@@ -130,9 +141,26 @@ export class NfcTagsService {
     return {
       code: tag.code,
       status: tag.status,
+      destinationKind: tag.destinationKind,
       destinationUrl:
         tag.status === TagStatus.CLAIMED
           ? (tag.destination?.url ?? null)
+          : null,
+      story:
+        tag.status === TagStatus.CLAIMED &&
+        tag.destinationKind === DestinationKind.STORY
+          ? {
+              tagId: tag.id,
+              theme: tag.storyTheme,
+              product: tag.orderItem
+                ? {
+                    name: tag.orderItem.product.name,
+                    images: tag.orderItem.product.images,
+                    gsm: tag.orderItem.product.gsm,
+                    fit: tag.orderItem.product.fit,
+                  }
+                : null,
+            }
           : null,
     };
   }
@@ -183,21 +211,33 @@ export class NfcTagsService {
       throw new NotFoundException('Tag not found');
     }
 
-    const ownedByMe = tag.status === TagStatus.CLAIMED && tag.ownerId === userId;
+    const ownedByMe =
+      tag.status === TagStatus.CLAIMED && tag.ownerId === userId;
     const eligible =
       tag.status === TagStatus.ASSIGNED &&
       tag.orderItem?.order.userId === userId;
-    // Covers the exact gap a real customer hit: claimed successfully, then
-    // left before setting a link. Returning here shouldn't say "not yours"
-    // — it should go straight back to the add-a-link step, not re-litigate
-    // ownership that's already settled.
-    const needsDestination = ownedByMe && !tag.destination;
+    // Three states an already-claimed owner can be in, so the claim page
+    // knows exactly which step to resume on rather than re-litigating
+    // ownership that's already settled:
+    //  - never chose Link vs Story at all -> needsDestinationChoice
+    //  - chose Link but never actually set a URL -> needsDestination
+    //  - chose Story -> destinationKind/storyTheme tell the frontend to
+    //    route straight to the story management screen (its own empty
+    //    state handles "zero entries yet", no separate flag needed here).
+    const needsDestinationChoice = ownedByMe && !tag.destinationKind;
+    const needsDestination =
+      ownedByMe &&
+      tag.destinationKind === DestinationKind.LINK &&
+      !tag.destination;
 
     return {
       id: tag.id,
       status: tag.status,
       eligible,
+      needsDestinationChoice,
       needsDestination,
+      destinationKind: ownedByMe ? tag.destinationKind : null,
+      storyTheme: ownedByMe ? tag.storyTheme : null,
       product:
         (eligible || ownedByMe) && tag.orderItem
           ? {
@@ -208,6 +248,33 @@ export class NfcTagsService {
             }
           : null,
     };
+  }
+
+  // Owner picks Link or Story right after claiming (or changes it later —
+  // not blocked, matches this codebase's general "trust internal actors,
+  // don't over-engineer state machines" stance, e.g. Order status updates).
+  async setDestinationKind(
+    userId: string,
+    tagId: string,
+    dto: UpdateDestinationKindDto,
+  ) {
+    const tag = await this.prisma.nfcTag.findFirst({
+      where: { id: tagId, ownerId: userId },
+    });
+    if (!tag) {
+      throw new NotFoundException('Tag not found');
+    }
+
+    return this.prisma.nfcTag.update({
+      where: { id: tagId },
+      data: {
+        destinationKind: dto.kind,
+        storyTheme:
+          dto.kind === DestinationKind.STORY
+            ? (dto.theme ?? tag.storyTheme ?? StoryTheme.SUNSET_BLOOM)
+            : tag.storyTheme,
+      },
+    });
   }
 
   findMine(userId: string) {

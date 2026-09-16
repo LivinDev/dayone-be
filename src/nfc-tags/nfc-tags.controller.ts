@@ -20,6 +20,7 @@ import { BulkGenerateTagsDto } from './dto/bulk-generate-tags.dto';
 import { AssignTagDto } from './dto/assign-tag.dto';
 import { ClaimTagDto } from './dto/claim-tag.dto';
 import { UpdateDestinationDto } from './dto/update-destination.dto';
+import { UpdateDestinationKindDto } from './dto/update-destination-kind.dto';
 
 @Controller('nfc-tags')
 export class NfcTagsController {
@@ -86,6 +87,18 @@ export class NfcTagsController {
   @UseGuards(JwtAuthGuard)
   findMine(@CurrentUser() user: AuthenticatedUser) {
     return this.nfcTagsService.findMine(user.userId);
+  }
+
+  // Authenticated — choose (or change) whether this tag is a plain Link or
+  // a hosted Story, and which theme the Story uses.
+  @Patch(':id/destination-kind')
+  @UseGuards(JwtAuthGuard)
+  updateDestinationKind(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateDestinationKindDto,
+  ) {
+    return this.nfcTagsService.setDestinationKind(user.userId, id, dto);
   }
 
   // Authenticated — set/update where a claimed tag redirects to.

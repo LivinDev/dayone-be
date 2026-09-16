@@ -199,22 +199,45 @@ model Invoice {
 }
 
 model NfcTag {
-  id              String          @id @default(cuid())
-  code            String          @unique // short code written on the physical tag
-  status          TagStatus       @default(UNCLAIMED)
-  orderItemId     String?         @unique // the one physical shirt this tag is fused to
-  orderItem       OrderItem?      @relation(fields: [orderItemId], references: [id])
+  id              String           @id @default(cuid())
+  code            String           @unique // short code written on the physical tag
+  status          TagStatus        @default(UNCLAIMED)
+  orderItemId     String?          @unique // the one physical shirt this tag is fused to
+  orderItem       OrderItem?       @relation(fields: [orderItemId], references: [id])
   ownerId         String?
-  owner           User?           @relation(fields: [ownerId], references: [id])
+  owner           User?            @relation(fields: [ownerId], references: [id])
   destination     Destination?
-  timelineEntries TimelineEntry[] // V2 only — leave unused in V1
-  createdAt       DateTime        @default(now())
+  // Which kind of destination this claimed tag currently resolves to — null
+  // until the owner picks one (right after claiming). LINK keeps using
+  // `destination`; STORY means GET /t/:code sends taps to /story/:code
+  // instead, and `destination` stays unused/null.
+  destinationKind DestinationKind?
+  // Only meaningful once destinationKind = STORY — which of the fixed
+  // preset color themes the owner's story page renders in.
+  storyTheme      StoryTheme?
+  timelineEntries TimelineEntry[]
+  createdAt       DateTime         @default(now())
 }
 
 enum TagStatus {
   UNCLAIMED // manufactured, not linked to a sale
   ASSIGNED // linked to an order item (one physical shirt), not yet claimed
   CLAIMED // buyer verified ownership, can edit destination
+}
+
+enum DestinationKind {
+  LINK
+  STORY
+}
+
+// Fixed preset palette an owner picks for their Story page — not an
+// arbitrary color picker (deliberately small/curated, matches this
+// project's stance against building infrastructure ahead of actual need).
+enum StoryTheme {
+  SUNSET_BLOOM
+  OCEAN_TIDE
+  FOREST_MOSS
+  MONO_ARCHIVE
 }
 
 model Destination {
@@ -225,20 +248,23 @@ model Destination {
   updatedAt DateTime @updatedAt
 }
 
-// ============ V2 ONLY — do not build until instructed ============
+// The Story feature's content — one entry per dated "moment" an owner logs
+// against their garment. Was scaffolded V2-only/unused; now built for real
+// (2026-09-16) as the second destinationKind alongside a plain link.
 model TimelineEntry {
   id        String      @id @default(cuid())
   tagId     String
   tag       NfcTag      @relation(fields: [tagId], references: [id])
-  photoUrl  String
+  images    String[] // gallery — same array-column convention as Product.images/ProductVariant.images, not a join table
   caption   String?
-  entryDate DateTime
-  status    EntryStatus @default(PENDING)
+  location  String? // free text (e.g. "Goa, India") — no map/coordinates in v1
+  entryDate DateTime    @default(now())
+  status    EntryStatus @default(APPROVED) // auto-published per founder's call — field kept so moderation can be turned on later via a default flip, not a migration
   createdAt DateTime    @default(now())
 }
 
 enum EntryStatus {
-  PENDING // never auto-publish
+  PENDING
   APPROVED
   REJECTED
 }

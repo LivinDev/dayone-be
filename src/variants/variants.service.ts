@@ -22,7 +22,10 @@ export class VariantsService {
     }
 
     await this.assertNoDuplicate(productId, dto.color ?? null, dto.size);
-    this.assertValidMrp(dto.mrpInPaise, dto.priceInPaise ?? product.priceInPaise);
+    this.assertValidMrp(
+      dto.mrpInPaise,
+      dto.priceInPaise ?? product.priceInPaise,
+    );
 
     try {
       return await this.prisma.productVariant.create({
@@ -117,7 +120,9 @@ export class VariantsService {
 
   private assertValidMrp(mrpInPaise: number | undefined, priceInPaise: number) {
     if (mrpInPaise != null && mrpInPaise < priceInPaise) {
-      throw new BadRequestException('MRP must be greater than or equal to the selling price');
+      throw new BadRequestException(
+        'MRP must be greater than or equal to the selling price',
+      );
     }
   }
 

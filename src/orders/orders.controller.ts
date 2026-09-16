@@ -16,11 +16,15 @@ import type { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { InvoicesService } from '../invoices/invoices.service';
 
 @Controller('orders')
 @UseGuards(JwtAuthGuard)
 export class OrdersController {
-  constructor(private ordersService: OrdersService) {}
+  constructor(
+    private ordersService: OrdersService,
+    private invoicesService: InvoicesService,
+  ) {}
 
   // Admin/Manager — every order, across every customer. Declared before the
   // bare `:id` route below, same route-ordering rule as Products/Variants.
@@ -45,6 +49,13 @@ export class OrdersController {
     return this.ordersService.updateStatus(id, dto);
   }
 
+  @Get('admin/:id/invoice/pdf')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.MANAGER)
+  getInvoicePdfForStaff(@Param('id') id: string) {
+    return this.invoicesService.getPdfUrlForStaff(id);
+  }
+
   @Get()
   findAll(@CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.findAll(user.userId);
@@ -53,6 +64,14 @@ export class OrdersController {
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.ordersService.findOne(user.userId, id);
+  }
+
+  @Get(':id/invoice/pdf')
+  getInvoicePdf(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.invoicesService.getPdfUrlForCustomer(user.userId, id);
   }
 
   @Post()

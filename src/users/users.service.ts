@@ -1,5 +1,6 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -33,6 +34,22 @@ export class UsersService {
       where: { id: userId },
       data: dto,
       select: PROFILE_SELECT,
+    });
+  }
+
+  // Admin-only. CUSTOMER accounts are deliberately excluded — this list is
+  // for managing who has staff access, not a general user directory.
+  listStaff() {
+    return this.prisma.user.findMany({
+      where: { role: { in: [Role.MANAGER, Role.ADMIN] } },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
     });
   }
 

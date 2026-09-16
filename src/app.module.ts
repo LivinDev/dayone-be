@@ -11,6 +11,7 @@ import { VariantsModule } from './variants/variants.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { NfcTagsModule } from './nfc-tags/nfc-tags.module';
 import { CategoriesModule } from './categories/categories.module';
+import { TimelineModule } from './timeline/timeline.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CategoriesModule } from './categories/categories.module';
     ReviewsModule,
     NfcTagsModule,
     CategoriesModule,
+    TimelineModule,
   ],
   controllers: [AppController],
   providers: [AppService],

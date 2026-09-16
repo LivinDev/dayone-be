@@ -113,7 +113,10 @@ export class ProductsService {
   async findBySlug(slug: string) {
     const product = await this.prisma.product.findUnique({
       where: { slug },
-      include: { variants: { orderBy: { createdAt: 'asc' } }, categories: true },
+      include: {
+        variants: { orderBy: { createdAt: 'asc' } },
+        categories: true,
+      },
     });
     if (!product || !product.active) {
       throw new NotFoundException('Product not found');
@@ -124,7 +127,10 @@ export class ProductsService {
   async findOneForStaff(id: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
-      include: { variants: { orderBy: { createdAt: 'asc' } }, categories: true },
+      include: {
+        variants: { orderBy: { createdAt: 'asc' } },
+        categories: true,
+      },
     });
     if (!product) {
       throw new NotFoundException('Product not found');
@@ -139,7 +145,9 @@ export class ProductsService {
       return await this.prisma.product.create({
         data: {
           ...rest,
-          ...(categories ? { categories: { connect: categories.map((id) => ({ id })) } } : {}),
+          ...(categories
+            ? { categories: { connect: categories.map((id) => ({ id })) } }
+            : {}),
         },
         include: { categories: true },
       });
@@ -152,7 +160,10 @@ export class ProductsService {
     const existing = await this.findOneForStaff(id);
     const { categories, ...rest } = dto;
     if (rest.mrpInPaise !== undefined) {
-      this.assertValidMrp(rest.mrpInPaise, rest.priceInPaise ?? existing.priceInPaise);
+      this.assertValidMrp(
+        rest.mrpInPaise,
+        rest.priceInPaise ?? existing.priceInPaise,
+      );
     }
     try {
       return await this.prisma.product.update({
@@ -162,7 +173,9 @@ export class ProductsService {
         // only adding to it.
         data: {
           ...rest,
-          ...(categories ? { categories: { set: categories.map((id) => ({ id })) } } : {}),
+          ...(categories
+            ? { categories: { set: categories.map((id) => ({ id })) } }
+            : {}),
         },
         include: { categories: true },
       });
@@ -176,16 +189,26 @@ export class ProductsService {
   // negative/zero discount.
   private assertValidMrp(mrpInPaise: number | undefined, priceInPaise: number) {
     if (mrpInPaise != null && mrpInPaise < priceInPaise) {
-      throw new BadRequestException('MRP must be greater than or equal to the selling price');
+      throw new BadRequestException(
+        'MRP must be greater than or equal to the selling price',
+      );
     }
   }
 
   private mapProductWriteError(err: unknown) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
       return new ConflictException('A product with this slug already exists');
     }
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
-      return new BadRequestException('One or more selected categories no longer exist');
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2025'
+    ) {
+      return new BadRequestException(
+        'One or more selected categories no longer exist',
+      );
     }
     return err;
   }

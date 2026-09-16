@@ -1,4 +1,8 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -14,14 +18,20 @@ export class CategoriesService {
       orderBy: { name: 'asc' },
       include: { _count: { select: { products: true } } },
     });
-    return categories.map(({ _count, ...c }) => ({ ...c, productCount: _count.products }));
+    return categories.map(({ _count, ...c }) => ({
+      ...c,
+      productCount: _count.products,
+    }));
   }
 
   async create(dto: CreateCategoryDto) {
     try {
       return await this.prisma.category.create({ data: dto });
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
         throw new ConflictException('A category with this slug already exists');
       }
       throw err;
@@ -33,7 +43,10 @@ export class CategoriesService {
     try {
       return await this.prisma.category.update({ where: { id }, data: dto });
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
         throw new ConflictException('A category with this slug already exists');
       }
       throw err;

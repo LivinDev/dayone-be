@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Redirect } from '@nestjs/common';
-import { TagStatus } from '@prisma/client';
+import { DestinationKind, TagStatus } from '@prisma/client';
 import { NfcTagsService } from './nfc-tags.service';
 
 // This route is deliberately its own controller at the app root (`/t/:code`,
@@ -20,7 +20,8 @@ export class TapRedirectController {
     // here would always see undefined and silently lock in the fallback for
     // the process's whole lifetime, regardless of what .env actually says
     // (the same class of bug already hit once with JwtModule.register()).
-    const frontendOrigin = process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000';
+    const frontendOrigin =
+      process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000';
 
     const tag = await this.nfcTagsService.findForRedirect(code);
 
@@ -31,11 +32,22 @@ export class TapRedirectController {
       return { url: frontendOrigin, statusCode: 302 };
     }
 
+    if (
+      tag.status === TagStatus.CLAIMED &&
+      tag.destinationKind === DestinationKind.STORY
+    ) {
+      // The Story itself lives on the frontend, not this API — same reason
+      // /claim/:code does, the page needs a real UI (gallery, theme,
+      // scroll animation), not something this redirect route can serve.
+      return { url: `${frontendOrigin}/story/${tag.code}`, statusCode: 302 };
+    }
+
     if (tag.status === TagStatus.CLAIMED && tag.destination) {
       return { url: tag.destination.url, statusCode: 302 };
     }
 
-    // Not yet claimed, or (edge case) claimed with no destination set yet —
+    // Not yet claimed, not yet chosen Link vs Story, or (edge case) chose
+    // Link but never set a URL —
     // either way `/claim/:code` on the frontend is the right landing spot:
     // it does its own by-code lookup and shows the right state (a claimed
     // tag with no link yet doesn't need to re-prove ownership through a

@@ -6,11 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
-
-// Day01's own GST-registered state — used to decide CGST+SGST (same state
-// as the buyer) vs IGST (different state). Not in the schema/env yet since
-// there's only ever been one seller; revisit if that ever changes.
-const SELLER_STATE = 'Karnataka';
+import { getSellerConfig } from '../common/config/seller-config';
 
 // Product prices are shown to customers as tax-inclusive ("Taxes Included"
 // on Cart/Product Detail) — so priceInPaise already has GST baked in. GST
@@ -217,7 +213,7 @@ export class OrdersService {
       (totalInPaise * GST_RATE) / (1 + GST_RATE),
     );
     const sameState =
-      normalizeState(address.state) === normalizeState(SELLER_STATE);
+      normalizeState(address.state) === normalizeState(getSellerConfig().state);
     const cgstInPaise = sameState ? Math.round(gstAmountInPaise / 2) : 0;
     const sgstInPaise = sameState ? gstAmountInPaise - cgstInPaise : 0;
     const igstInPaise = sameState ? 0 : gstAmountInPaise;
