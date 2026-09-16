@@ -9,6 +9,15 @@ import { EntryStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTimelineEntryDto } from './dto/create-timeline-entry.dto';
 import { UpdateTimelineEntryDto } from './dto/update-timeline-entry.dto';
+import { SectionInputDto } from './dto/section-input.dto';
+import { UpdateSectionDto } from './dto/update-section.dto';
+
+const SECTIONS_INCLUDE = {
+  sections: {
+    orderBy: { order: 'asc' as const },
+    include: { images: { orderBy: { order: 'asc' as const } } },
+  },
+};
 
 @Injectable()
 export class TimelineService {
@@ -61,6 +70,7 @@ export class TimelineService {
     return this.prisma.timelineEntry.findMany({
       where: { tagId, status: EntryStatus.APPROVED },
       orderBy: { entryDate: 'asc' },
+      include: SECTIONS_INCLUDE,
     });
   }
 
@@ -77,9 +87,12 @@ export class TimelineService {
     return this.prisma.timelineEntry.findMany({
       where: { tagId },
       orderBy: { entryDate: 'desc' },
+      include: SECTIONS_INCLUDE,
     });
   }
 
+  // Creates a day and its first section(s) in one nested write — Prisma
+  // batches nested creates atomically, no explicit $transaction needed.
   async create(userId: string, tagId: string, dto: CreateTimelineEntryDto) {
     const tag = await this.prisma.nfcTag.findFirst({
       where: { id: tagId, ownerId: userId },
@@ -91,14 +104,35 @@ export class TimelineService {
     return this.prisma.timelineEntry.create({
       data: {
         tagId,
-        images: dto.images,
-        caption: dto.caption,
         location: dto.location,
+        occasion: dto.occasion,
         ...(dto.entryDate ? { entryDate: new Date(dto.entryDate) } : {}),
+        sections: {
+          create: dto.sections.map((section, sectionIndex) =>
+            this.sectionCreateData(section, sectionIndex),
+          ),
+        },
       },
+      include: SECTIONS_INCLUDE,
     });
   }
 
+  private sectionCreateData(section: SectionInputDto, order: number) {
+    return {
+      caption: section.caption,
+      order,
+      images: {
+        create: section.images.map((image, imageIndex) => ({
+          url: image.url,
+          caption: image.caption,
+          order: imageIndex,
+        })),
+      },
+    };
+  }
+
+  // Day-level fields only (location/occasion/date) — sections/images go
+  // through their own endpoints below.
   async update(userId: string, entryId: string, dto: UpdateTimelineEntryDto) {
     const entry = await this.prisma.timelineEntry.findFirst({
       where: { id: entryId, tag: { ownerId: userId } },
@@ -112,21 +146,99 @@ export class TimelineService {
     return this.prisma.timelineEntry.update({
       where: { id: entryId },
       data: {
-        ...(dto.images ? { images: dto.images } : {}),
-        ...(dto.caption !== undefined ? { caption: dto.caption } : {}),
         ...(dto.location !== undefined ? { location: dto.location } : {}),
+        ...(dto.occasion !== undefined ? { occasion: dto.occasion } : {}),
         ...(dto.entryDate ? { entryDate: new Date(dto.entryDate) } : {}),
       },
+      include: SECTIONS_INCLUDE,
     });
   }
 
+  // Deletes a day and every section/image under it — explicit ordered
+  // deletes, not onDelete:Cascade, matching this backend's standing
+  // convention (see Addresses' note on the same choice).
   async remove(userId: string, entryId: string) {
     const entry = await this.prisma.timelineEntry.findFirst({
       where: { id: entryId, tag: { ownerId: userId } },
+      include: { sections: true },
     });
     if (!entry) {
       throw new NotFoundException('Entry not found');
     }
+    const sectionIds = entry.sections.map((s) => s.id);
+    await this.prisma.timelineImage.deleteMany({
+      where: { sectionId: { in: sectionIds } },
+    });
+    await this.prisma.timelineSection.deleteMany({
+      where: { entryId },
+    });
     await this.prisma.timelineEntry.delete({ where: { id: entryId } });
+  }
+
+  async addSection(userId: string, entryId: string, dto: SectionInputDto) {
+    const entry = await this.prisma.timelineEntry.findFirst({
+      where: { id: entryId, tag: { ownerId: userId } },
+      include: { sections: true },
+    });
+    if (!entry) {
+      throw new NotFoundException('Entry not found');
+    }
+
+    return this.prisma.timelineSection.create({
+      data: {
+        entryId,
+        ...this.sectionCreateData(dto, entry.sections.length),
+      },
+      include: { images: { orderBy: { order: 'asc' } } },
+    });
+  }
+
+  async updateSection(
+    userId: string,
+    sectionId: string,
+    dto: UpdateSectionDto,
+  ) {
+    const section = await this.prisma.timelineSection.findFirst({
+      where: { id: sectionId, entry: { tag: { ownerId: userId } } },
+    });
+    if (!section) {
+      throw new NotFoundException('Section not found');
+    }
+
+    if (dto.images) {
+      // Full replace — simplest correct way to support add/remove/reorder
+      // from one submission, same convention as Product.images on update.
+      await this.prisma.timelineImage.deleteMany({ where: { sectionId } });
+    }
+
+    return this.prisma.timelineSection.update({
+      where: { id: sectionId },
+      data: {
+        ...(dto.caption !== undefined ? { caption: dto.caption } : {}),
+        ...(dto.images
+          ? {
+              images: {
+                create: dto.images.map((image, i) => ({
+                  url: image.url,
+                  caption: image.caption,
+                  order: i,
+                })),
+              },
+            }
+          : {}),
+      },
+      include: { images: { orderBy: { order: 'asc' } } },
+    });
+  }
+
+  async removeSection(userId: string, sectionId: string) {
+    const section = await this.prisma.timelineSection.findFirst({
+      where: { id: sectionId, entry: { tag: { ownerId: userId } } },
+    });
+    if (!section) {
+      throw new NotFoundException('Section not found');
+    }
+    await this.prisma.timelineImage.deleteMany({ where: { sectionId } });
+    await this.prisma.timelineSection.delete({ where: { id: sectionId } });
   }
 }

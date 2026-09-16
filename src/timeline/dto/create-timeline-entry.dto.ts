@@ -1,25 +1,21 @@
 import {
-  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsIn,
   IsOptional,
   IsString,
   MaxLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { EntryOccasion } from '@prisma/client';
+import { SectionInputDto } from './section-input.dto';
 
+// A "day" — location/occasion/date describe the day itself; the actual
+// content is its sections (each a captioned group of images). At least one
+// section is required to create a day at all.
 export class CreateTimelineEntryDto {
-  @IsArray()
-  @ArrayMinSize(1, { message: 'Add at least one image' })
-  @ArrayMaxSize(6, { message: 'An entry can have at most 6 images' })
-  @IsString({ each: true })
-  images: string[];
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(280)
-  caption?: string;
-
   @IsOptional()
   @IsString()
   @MaxLength(120)
@@ -30,4 +26,14 @@ export class CreateTimelineEntryDto {
   @IsOptional()
   @IsDateString()
   entryDate?: string;
+
+  @IsOptional()
+  @IsIn(Object.values(EntryOccasion))
+  occasion?: EntryOccasion;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Add at least one section' })
+  @ValidateNested({ each: true })
+  @Type(() => SectionInputDto)
+  sections: SectionInputDto[];
 }

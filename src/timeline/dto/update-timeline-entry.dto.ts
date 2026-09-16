@@ -1,26 +1,15 @@
 import {
-  ArrayMaxSize,
-  ArrayMinSize,
-  IsArray,
   IsDateString,
+  IsIn,
   IsOptional,
   IsString,
   MaxLength,
 } from 'class-validator';
+import { EntryOccasion } from '@prisma/client';
 
+// Day-level fields only — sections/images are managed through their own
+// endpoints (POST .../sections, PATCH /timeline/sections/:id), not here.
 export class UpdateTimelineEntryDto {
-  @IsOptional()
-  @IsArray()
-  @ArrayMinSize(1, { message: 'Add at least one image' })
-  @ArrayMaxSize(6, { message: 'An entry can have at most 6 images' })
-  @IsString({ each: true })
-  images?: string[];
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(280)
-  caption?: string;
-
   @IsOptional()
   @IsString()
   @MaxLength(120)
@@ -29,4 +18,8 @@ export class UpdateTimelineEntryDto {
   @IsOptional()
   @IsDateString()
   entryDate?: string;
+
+  @IsOptional()
+  @IsIn(Object.values(EntryOccasion))
+  occasion?: EntryOccasion;
 }

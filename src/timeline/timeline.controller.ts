@@ -19,6 +19,8 @@ import type { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface
 import { TimelineService } from './timeline.service';
 import { CreateTimelineEntryDto } from './dto/create-timeline-entry.dto';
 import { UpdateTimelineEntryDto } from './dto/update-timeline-entry.dto';
+import { SectionInputDto } from './dto/section-input.dto';
+import { UpdateSectionDto } from './dto/update-section.dto';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB — same cap as Products' uploader
 
@@ -92,5 +94,36 @@ export class TimelineController {
   @UseGuards(JwtAuthGuard)
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.timelineService.remove(user.userId, id);
+  }
+
+  // A moment within a day — added after the day already exists (the day's
+  // *first* section is created inline via POST .../timeline above).
+  @Post('timeline/:entryId/sections')
+  @UseGuards(JwtAuthGuard)
+  addSection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('entryId') entryId: string,
+    @Body() dto: SectionInputDto,
+  ) {
+    return this.timelineService.addSection(user.userId, entryId, dto);
+  }
+
+  @Patch('timeline/sections/:id')
+  @UseGuards(JwtAuthGuard)
+  updateSection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateSectionDto,
+  ) {
+    return this.timelineService.updateSection(user.userId, id, dto);
+  }
+
+  @Delete('timeline/sections/:id')
+  @UseGuards(JwtAuthGuard)
+  removeSection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.timelineService.removeSection(user.userId, id);
   }
 }

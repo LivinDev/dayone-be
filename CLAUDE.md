@@ -2,6 +2,42 @@
 
 Workspace overview and business context: `../CLAUDE.md`. Frontend spec: `../dayone-web/dayone.md`. **Full backend spec (data model, stack, build order, key business logic) is `dayone-backend.md` in this directory — read it in full before writing any backend code.** This file only tracks build status; it doesn't restate the spec.
 
+## Per-image captions + multi-section days — 2026-09-17
+
+Founder-requested restructuring, planned before building (per their own "make a plan first" instruction) since it touched the schema and needed a real data migration, not just new fields. Two structural changes: (1) each image now carries its own caption, not the whole entry; (2) a day can hold multiple sections — small captioned groups of images — instead of one flat gallery. Two levels deeper than the original `TimelineEntry.images: String[]`/`caption`.
+
+**New shape**: `TimelineEntry` (a "day" — `location`/`occasion`/`entryDate` stay here) → `TimelineSection[]` (a moment within the day, own optional `caption`, `order`) → `TimelineImage[]` (own `url`, `caption`, `order`).
+
+**Migration, done in three deliberate steps, not one** — the founder's real entry (their real birthday photos, real caption, real location) was live in the old flat shape and could not be lost:
+1. **Additive migration** (`20260917010000_add_timeline_sections_images`) — created `TimelineSection`/`TimelineImage`, left `TimelineEntry.images`/`caption` untouched. Zero risk, nothing reads the new tables yet.
+2. **One-off backfill script** (`prisma/backfill-timeline-sections.ts`, run once via `ts-node`, then deleted — not committed) — wrapped every existing entry's `images`+`caption` into one auto-created section (`order: 0`, section `caption` = the old entry `caption`, one `TimelineImage` per old url). Verified the founder's real 2-image entry round-tripped byte-for-byte (same URLs, same order, same caption text) via direct SQL before proceeding.
+3. **Destructive migration** (`20260917010500_drop_timeline_entry_flat_fields`) — only run after step 2 was confirmed correct — drops `TimelineEntry.images`/`caption`.
+
+**API shape** — sections' images are submitted as a full replaceable array on save (same "resubmit the whole list" convention `Product.images` already uses), not fine-grained per-image endpoints:
+- `POST /nfc-tags/:tagId/timeline` — creates a day **and** its first section(s) in one nested Prisma write: `{ location?, occasion?, entryDate?, sections: [{ caption?, images: [{url, caption?}] }] }`.
+- `PATCH /timeline/:id` — day-level fields only now (`location`/`occasion`/`entryDate`) — sections/images moved to their own endpoints below.
+- `POST /timeline/:entryId/sections` — add a section to an existing day.
+- `PATCH /timeline/sections/:id` — replace a section's caption + full images array.
+- `DELETE /timeline/sections/:id` — remove one section (explicit ordered delete of its images first — no `onDelete: Cascade`, same standing convention as Addresses).
+- `DELETE /timeline/:id` (whole day) now also explicitly cascades through sections→images itself, for the same reason.
+
+New DTOs: `ImageInputDto` (`url`, optional `caption`), `SectionInputDto` (optional `caption`, `images: ImageInputDto[]`, 1–6 each — nested-validated via `class-validator`'s `@ValidateNested`/`class-transformer`'s `@Type`), `UpdateSectionDto` (same shape, all optional).
+
+Verified live: migration steps re-confirmed via direct SQL after each one (founder's entry intact throughout — 2 images, correct order, correct caption, correct location/occasion — never touched); new nested create/read/update/delete routes curl-tested; then the full real UI flow via Playwright (see `dayone-web/CLAUDE.md`'s matching note) — a 2-section day with per-image captions, composed, previewed, saved, and rendered correctly on the real public Story page, plus the founder's actual real entry loading correctly through the new nested API and rendering on their live page with zero regressions.
+
+**How to apply**: Any future editor for this data must resubmit a section's *entire* image list on change (add/remove/reorder are all "here's the new full array"), not attempt per-image add/remove calls — that's the one thing this API deliberately doesn't support, to keep the surface small.
+
+## Per-moment occasion tags — 2026-09-16 (follow-up to the Story feature)
+
+Founder asked for the theme-picker's plain color swatches to instead be icon+color+text, using real occasion names (Sunset, Beach Day, Trekking, Birthday, Amusement Park, Date, Restaurant). Two real decisions confirmed before building, not assumed: (1) this applies **per moment/entry**, not per-Story — a Story collects many different occasions over its lifetime, so a once-chosen page-level occasion wouldn't fit (the existing `storyTheme` color picker is unrelated and untouched); (2) icon+color pairs are the founder's own quick pick for now (not sourced from Stitch), open to revision once seen.
+
+- **Schema**: new `EntryOccasion` enum (`SUNSET | BEACH_DAY | TREKKING | BIRTHDAY | AMUSEMENT_PARK | DATE_NIGHT | RESTAURANT`), `TimelineEntry.occasion EntryOccasion?` — optional, a fixed curated set (not open-ended tagging), same "no infrastructure ahead of need" stance already used for product categories before they needed to be admin-manageable. Migration `20260916233000_entry_occasion`.
+- DTOs (`CreateTimelineEntryDto`/`UpdateTimelineEntryDto`) validate via `@IsIn(Object.values(EntryOccasion))`; service passes it through on create, and on update only when the key is present (so `null` explicitly clears it, `undefined`/omitted leaves it alone — same pattern already used for `caption`/`location`).
+
+Verified live with curl + Playwright: DTO round-trips correctly, and the full real flow — composer's occasion picker (7 icon+color chips) → live preview badge → saved entry in the management list → the same badge rendering on the real public `/story/[code]` page — all confirmed end-to-end, not just at the API layer. Test data cleaned up after; founder's real tag confirmed untouched.
+
+**How to apply**: `src/lib/story-occasions.ts` (frontend) is the one place occasion icon/color/label is defined — any change to the set (add/remove/re-color an occasion) happens there and in this schema's enum together, nowhere else.
+
 ## NFC Story feature — the V2 timeline, built for real — 2026-09-16
 
 Founder asked for a second option alongside the existing plain Link destination: a "Story" — a colorful, owner-built timeline of dated moments (photos, a location, a caption) tied to a claimed garment. This is literally the `TimelineEntry`/`EntryStatus` model that's sat scaffolded-but-explicitly-unbuilt since the very first migration ("V2 ONLY — do not build until instructed" in the schema comment) — now built, on the founder's explicit go-ahead, with two real scope decisions confirmed with them first, not assumed:
@@ -49,9 +85,9 @@ Verified live with curl: unauthenticated 401, Admin sees both real staff account
 
 **How to apply:** Staff management (list + create) is now complete on both ends — no edit/delete/deactivate endpoint exists for staff accounts, deliberately not built since nothing asked for it yet (`User` has no `active` flag, unlike `Product`). Add one only if a real need comes up.
 
-## Current state: Prisma/Postgres foundation + Auth/roles + Products + Addresses + Orders + NFC tags done
+## Current state (updated 2026-09-17): everything below is done except real payment gateway integration
 
-`AppController`/`AppService` are still the generated `nest new` defaults; `AuthModule`, `UsersModule`, `ProductsModule`, `AddressesModule`, `OrdersModule`, and now `NfcTagsModule` are real and working (see below). Payments (real gateway integration)/invoicing (PDF generation)/admin-staff-UI don't exist yet — Orders currently only supports **Cash on Delivery**, no Razorpay/Cashfree. Build order step 4 (Orders + Payments) is **partially done** — order creation with correct GST calculation and invoice numbering works end-to-end, real payment gateway integration doesn't exist yet per an explicit user decision (see below). **Build order step 6 (NFC tag system) is now fully done, backend and frontend both** — see "NFC tag system" below.
+`AppController`/`AppService` are still the generated `nest new` defaults; `AuthModule`, `UsersModule` (incl. Staff list+create), `ProductsModule`, `AddressesModule`, `OrdersModule`, `InvoicesModule`, `NfcTagsModule`, `CategoriesModule`, and `TimelineModule` are all real and working. **Only real payment gateway integration (Razorpay/Cashfree) remains unbuilt** in this backend — an explicit, still-current user decision (no sandbox credentials exist), not an oversight. Orders is COD-only. GST invoice **PDF generation is now done** (was numbering-only as of the note below — see "GST invoice PDF generation," 2026-09-16) — `Invoice.pdfUrl` populates on first request, though `.env`'s `SELLER_*` fields are still placeholders pending the founder's real registered business details. **Build order step 6 (NFC tag system) is fully done** and was substantially extended 2026-09-16/17 with a second destination type (`STORY` — see "NFC Story feature" below) alongside the original plain `LINK`.
 
 **Deployed as of 2026-09-09**: live at `https://api.day01.store`, running on an EC2 instance (`~/new-store-backend`) under pm2 (process name `dayone-be`, `dist/src/main.js`, port 4000, `nginx` reverse-proxying 443→4000). Redeployed again later the same day to ship the FRONTEND_ORIGIN/CORS fix plus admin-manageable Categories and MRP/discount pricing (see those sections below) — confirmed live by querying the production API directly. Real commit history now exists on `main` (`cf02d1f`, `d6aa25d`, `49f605d`), pushed to `github.com/LivinDev/dayone-be` — the old "zero commits" state is long stale. See "Production deploy — CORS + a real FRONTEND_ORIGIN bug" below for what shipped with the first deploy. **`day01.store` (frontend) is also live, but whether it's running this session's frontend changes (Home/Collection redesign, admin Categories/MRP UI, auth-routing fixes) hasn't been confirmed** — see `dayone-web/CLAUDE.md`.
 

@@ -252,15 +252,51 @@ model Destination {
 // against their garment. Was scaffolded V2-only/unused; now built for real
 // (2026-09-16) as the second destinationKind alongside a plain link.
 model TimelineEntry {
-  id        String      @id @default(cuid())
+  id        String            @id @default(cuid())
   tagId     String
-  tag       NfcTag      @relation(fields: [tagId], references: [id])
-  images    String[] // gallery — same array-column convention as Product.images/ProductVariant.images, not a join table
-  caption   String?
+  tag       NfcTag            @relation(fields: [tagId], references: [id])
   location  String? // free text (e.g. "Goa, India") — no map/coordinates in v1
-  entryDate DateTime    @default(now())
-  status    EntryStatus @default(APPROVED) // auto-published per founder's call — field kept so moderation can be turned on later via a default flip, not a migration
-  createdAt DateTime    @default(now())
+  occasion  EntryOccasion? // per-moment tag (Birthday, Beach Day, ...) — optional, distinct from NfcTag.storyTheme (the whole page's one-time color theme)
+  entryDate DateTime          @default(now())
+  status    EntryStatus       @default(APPROVED) // auto-published per founder's call — field kept so moderation can be turned on later via a default flip, not a migration
+  createdAt DateTime          @default(now())
+  sections  TimelineSection[]
+}
+
+// A moment within a day — a day (TimelineEntry) can hold several, each its
+// own small block of captioned images. Added 2026-09-16 so a day can be
+// more than one flat gallery+caption (e.g. "Lunch" and "Evening walk" as
+// two separate sections on the same birthday).
+model TimelineSection {
+  id        String         @id @default(cuid())
+  entryId   String
+  entry     TimelineEntry  @relation(fields: [entryId], references: [id])
+  caption   String? // short label for this section, distinct from each image's own caption below
+  order     Int            @default(0)
+  createdAt DateTime       @default(now())
+  images    TimelineImage[]
+}
+
+model TimelineImage {
+  id        String          @id @default(cuid())
+  sectionId String
+  section   TimelineSection @relation(fields: [sectionId], references: [id])
+  url       String
+  caption   String? // per-image caption — the actual new capability this migration adds
+  order     Int             @default(0)
+}
+
+// Per-moment occasion tag, chosen when adding an entry — a fixed, curated
+// set (matches this project's stance against open-ended taxonomy for
+// something this small), each with its own icon+color in the frontend.
+enum EntryOccasion {
+  SUNSET
+  BEACH_DAY
+  TREKKING
+  BIRTHDAY
+  AMUSEMENT_PARK
+  DATE_NIGHT
+  RESTAURANT
 }
 
 enum EntryStatus {
