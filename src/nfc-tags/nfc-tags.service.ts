@@ -282,7 +282,13 @@ export class NfcTagsService {
       where: { ownerId: userId },
       include: {
         destination: true,
-        orderItem: { include: { product: { select: { name: true } } } },
+        orderItem: {
+          select: {
+            size: true,
+            color: true,
+            product: { select: { name: true, images: true, gsm: true, fit: true } },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
