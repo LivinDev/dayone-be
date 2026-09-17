@@ -7,6 +7,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 import { EntryStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { compressImage } from '../common/utils/image-processing.util';
 import { CreateTimelineEntryDto } from './dto/create-timeline-entry.dto';
 import { UpdateTimelineEntryDto } from './dto/update-timeline-entry.dto';
 import { SectionInputDto } from './dto/section-input.dto';
@@ -42,13 +43,15 @@ export class TimelineService {
       );
     }
 
-    const key = `timeline/${randomUUID()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
+    const compressed = await compressImage(file.buffer);
+    const baseName = file.originalname.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '-');
+    const key = `timeline/${randomUUID()}-${baseName}.${compressed.extension}`;
     await this.getS3Client().send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
+        Body: compressed.buffer,
+        ContentType: compressed.contentType,
       }),
     );
 

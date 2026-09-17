@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { compressImage } from '../common/utils/image-processing.util';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
@@ -35,13 +36,15 @@ export class ProductsService {
       );
     }
 
-    const key = `products/${randomUUID()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
+    const compressed = await compressImage(file.buffer);
+    const baseName = file.originalname.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '-');
+    const key = `products/${randomUUID()}-${baseName}.${compressed.extension}`;
     await this.getS3Client().send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
+        Body: compressed.buffer,
+        ContentType: compressed.contentType,
       }),
     );
 
