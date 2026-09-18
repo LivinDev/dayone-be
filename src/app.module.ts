@@ -12,6 +12,7 @@ import { ReviewsModule } from './reviews/reviews.module';
 import { NfcTagsModule } from './nfc-tags/nfc-tags.module';
 import { CategoriesModule } from './categories/categories.module';
 import { TimelineModule } from './timeline/timeline.module';
+import { GarmentTagRequestsModule } from './garment-tag-requests/garment-tag-requests.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { TimelineModule } from './timeline/timeline.module';
     NfcTagsModule,
     CategoriesModule,
     TimelineModule,
+    GarmentTagRequestsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

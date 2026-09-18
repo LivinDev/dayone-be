@@ -16,19 +16,20 @@ enum Role {
 }
 
 model User {
-  id                    String    @id @default(cuid())
-  email                 String    @unique
-  password              String // bcrypt hash
-  phone                 String?
-  name                  String?
-  role                  Role      @default(CUSTOMER)
-  passwordResetToken    String?   @unique
-  passwordResetExpires  DateTime?
-  createdAt             DateTime  @default(now())
-  orders                Order[]
-  nfcTags               NfcTag[]
-  addresses             Address[]
-  reviews               Review[]
+  id                   String              @id @default(cuid())
+  email                String              @unique
+  password             String // bcrypt hash
+  phone                String?
+  name                 String?
+  role                 Role                @default(CUSTOMER)
+  passwordResetToken   String?             @unique
+  passwordResetExpires DateTime?
+  createdAt            DateTime            @default(now())
+  orders               Order[]
+  nfcTags              NfcTag[]
+  addresses            Address[]
+  reviews              Review[]
+  garmentTagRequests   GarmentTagRequest[]
 }
 
 // Saved shipping addresses — a user can have several, one marked default.
@@ -68,9 +69,9 @@ model Category {
 }
 
 model Product {
-  id           String      @id @default(cuid())
+  id           String           @id @default(cuid())
   name         String
-  slug         String      @unique
+  slug         String           @unique
   description  String
   priceInPaise Int // store money as integer paise, never float — base/fallback selling price
   mrpInPaise   Int? // optional "was" price — discount % is computed live from this, never stored
@@ -78,8 +79,8 @@ model Product {
   fit          String? // e.g. "Oversized Drop Shoulder"
   images       String[] // max 5, enforced in the DTO — shared/default gallery
   categories   Category[] // occasion/gender tags, a product can have multiple
-  active       Boolean     @default(true)
-  createdAt    DateTime    @default(now())
+  active       Boolean          @default(true)
+  createdAt    DateTime         @default(now())
   orderItems   OrderItem[]
   variants     ProductVariant[]
   reviews      Review[]
@@ -199,24 +200,31 @@ model Invoice {
 }
 
 model NfcTag {
-  id              String           @id @default(cuid())
-  code            String           @unique // short code written on the physical tag
-  status          TagStatus        @default(UNCLAIMED)
-  orderItemId     String?          @unique // the one physical shirt this tag is fused to
-  orderItem       OrderItem?       @relation(fields: [orderItemId], references: [id])
-  ownerId         String?
-  owner           User?            @relation(fields: [ownerId], references: [id])
-  destination     Destination?
+  id                  String             @id @default(cuid())
+  code                String             @unique // short code written on the physical tag
+  status              TagStatus          @default(UNCLAIMED)
+  orderItemId         String?            @unique // the one physical shirt this tag is fused to
+  orderItem           OrderItem?         @relation(fields: [orderItemId], references: [id])
+  // A tag fused to a garment the customer already owned (not bought from
+  // Day01) via the retrofit "tag my own garment" service — mutually
+  // exclusive with orderItemId, same nullable-FK shape. Set once staff mark
+  // a GarmentTagRequest TAG_INSTALLED; ownerId is set directly at the same
+  // time (the requester is already known — no separate claim step needed).
+  tagInstallRequestId String?            @unique
+  tagInstallRequest   GarmentTagRequest? @relation(fields: [tagInstallRequestId], references: [id])
+  ownerId             String?
+  owner               User?              @relation(fields: [ownerId], references: [id])
+  destination         Destination?
   // Which kind of destination this claimed tag currently resolves to — null
   // until the owner picks one (right after claiming). LINK keeps using
   // `destination`; STORY means GET /t/:code sends taps to /story/:code
   // instead, and `destination` stays unused/null.
-  destinationKind DestinationKind?
+  destinationKind     DestinationKind?
   // Only meaningful once destinationKind = STORY — which of the fixed
   // preset color themes the owner's story page renders in.
-  storyTheme      StoryTheme?
-  timelineEntries TimelineEntry[]
-  createdAt       DateTime         @default(now())
+  storyTheme          StoryTheme?
+  timelineEntries     TimelineEntry[]
+  createdAt           DateTime           @default(now())
 }
 
 enum TagStatus {
@@ -248,6 +256,63 @@ model Destination {
   updatedAt DateTime @updatedAt
 }
 
+// "Tag my own garment" — a retrofit service, separate from the main
+// purchase flow: a customer sends in a garment they already own (not
+// bought from Day01) to have an NFC tag physically fused into it. Added
+// 2026-09-17, not in the original spec. No Order/OrderItem/payment-gateway
+// involvement — this isn't a Product purchase, so it gets its own model
+// and its own fixed cash-on-pickup fee rather than being forced through
+// the Orders module. Pickup logistics are manual (founder arranges it
+// directly with the customer) — no courier API integration, matching this
+// project's no-dev-budget, speed-over-scale stance everywhere else.
+model GarmentTagRequest {
+  id              String                  @id @default(cuid())
+  userId          String
+  user            User                    @relation(fields: [userId], references: [id])
+  garmentPhotoUrl String
+  garmentNote     String? // optional free text, e.g. "black oversized hoodie"
+  // Where on the photo the tag should go — normalized 0-1 fractions of the
+  // image's width/height, not pixels, so it renders correctly regardless
+  // of what size the photo is actually displayed at (composer vs admin
+  // detail vs any future thumbnail).
+  markerX         Float
+  markerY         Float
+  contactName     String
+  contactPhone    String
+  contactEmail    String
+  pickupLine1     String
+  pickupLine2     String?
+  pickupCity      String
+  pickupState     String
+  pickupPincode   String
+  // Only set if the customer used "Use My Current Location" — lets the
+  // admin queue offer a precise "Open in Maps" link instead of just a
+  // text-address search. Null is common and fine; never blocks submission.
+  pickupLat       Float?
+  pickupLng       Float?
+  // Fixed at creation time from a server-side constant, never trusted from
+  // the client — same "money is never client-supplied" rule Orders already
+  // follows. Cash on pickup/drop-off, no payment gateway involved.
+  feeInPaise      Int
+  status          GarmentTagRequestStatus @default(SUBMITTED)
+  // Internal staff notes (e.g. "customer prefers evening pickup") — never
+  // shown to the customer, same spirit as this codebase's other admin-only
+  // free-text fields.
+  staffNotes      String?
+  nfcTag          NfcTag?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+}
+
+enum GarmentTagRequestStatus {
+  SUBMITTED // just submitted, awaiting staff to arrange pickup
+  PICKUP_SCHEDULED // staff have contacted the customer and arranged a pickup
+  RECEIVED // garment physically received by Day01
+  TAG_INSTALLED // tag fused in — this is the status transition that links a real NfcTag and sets ownership
+  RETURNED // garment shipped/handed back to the customer
+  CANCELLED
+}
+
 // The Story feature's content — one entry per dated "moment" an owner logs
 // against their garment. Was scaffolded V2-only/unused; now built for real
 // (2026-09-16) as the second destinationKind alongside a plain link.
@@ -268,12 +333,12 @@ model TimelineEntry {
 // more than one flat gallery+caption (e.g. "Lunch" and "Evening walk" as
 // two separate sections on the same birthday).
 model TimelineSection {
-  id        String         @id @default(cuid())
+  id        String          @id @default(cuid())
   entryId   String
-  entry     TimelineEntry  @relation(fields: [entryId], references: [id])
+  entry     TimelineEntry   @relation(fields: [entryId], references: [id])
   caption   String? // short label for this section, distinct from each image's own caption below
-  order     Int            @default(0)
-  createdAt DateTime       @default(now())
+  order     Int             @default(0)
+  createdAt DateTime        @default(now())
   images    TimelineImage[]
 }
 

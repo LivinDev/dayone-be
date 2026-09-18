@@ -289,6 +289,12 @@ export class NfcTagsService {
             product: { select: { name: true, images: true, gsm: true, fit: true } },
           },
         },
+        // Set instead of orderItem for a tag installed via the "tag my own
+        // garment" retrofit service — GarmentsTab falls back to this
+        // photo/note when there's no purchased product to show.
+        tagInstallRequest: {
+          select: { garmentPhotoUrl: true, garmentNote: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
